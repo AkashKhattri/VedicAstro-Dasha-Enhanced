@@ -5,7 +5,7 @@ from flatlib.chart import Chart
 from flatlib.geopos import GeoPos
 from flatlib.datetime import Datetime, Date
 from flatlib.object import GenericObject
-
+from flatlib import aspects
 import collections
 import polars as pl
 

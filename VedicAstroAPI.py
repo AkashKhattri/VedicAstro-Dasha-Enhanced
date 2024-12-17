@@ -3,7 +3,10 @@ from pydantic import BaseModel
 from fastapi import FastAPI
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.middleware.cors import CORSMiddleware
-from vedicastro import VedicAstro, horary_chart, utils
+from vedicastro import VedicAstro, horary_chart
+from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced
+from vedicastro.utils import pretty_data_table
+
 
 app = FastAPI()
 
@@ -14,11 +17,11 @@ class ChartInput(BaseModel):
     hour: int
     minute: int
     second: int
-    utc: str
+    utc: str = None
     latitude: float
     longitude: float
-    ayanamsa: str = "Lahiri"
-    house_system: str = "Equal"
+    ayanamsa: str = "Krishnamurti"
+    house_system: str = "Placidus"
     return_style: Optional[str] = None
 
 class HoraryChartInput(BaseModel):
@@ -51,36 +54,89 @@ async def read_root():
             "info": "Visit http://127.0.0.1:8088/docs to test the API functions"}
 
 
-@app.post("/get_all_horoscope_data")
-async def get_chart_data(input: ChartInput):
+@app.post("/get_vimshottari_dasa")
+async def get_chart_data(horo_input: ChartInput):
     """
     Generates all data for a given time and location, based on the selected ayanamsa & house system
     """
-    horoscope = VedicAstro.VedicHoroscopeData(input.year, input.month, input.day,
-                                              input.hour, input.minute, input.second,
-                                              input.utc, input.latitude, input.longitude,
-                                              input.ayanamsa, input.house_system)
-    chart = horoscope.generate_chart()
 
+
+    # chart = horoscope.generate_chart()
+
+    # planets_data = horoscope.get_planets_data_from_chart(chart)
+    # houses_data = horoscope.get_houses_data_from_chart(chart)
+    # planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
+    # planetary_aspects = horoscope.get_planetary_aspects(chart)
+    # house_significators = horoscope.get_house_wise_significators(planets_data, houses_data)
+    vimshottari_dasa = compute_vimshottari_dasa_enahanced(
+        horo_input.year,
+        horo_input.month,
+        horo_input.day,
+        horo_input.hour,
+        horo_input.minute,
+        horo_input.second,
+        horo_input.latitude,
+        horo_input.longitude,
+        horo_input.utc,
+        horo_input.ayanamsa,
+        horo_input.house_system
+    )
+    # consolidated_chart_data = horoscope.get_consolidated_chart_data(planets_data=planets_data,
+    #                                                                 houses_data=houses_data,
+    #                                                                 return_style = horo_input.return_style)
+
+    return vimshottari_dasa
+
+    # return {
+    #     "vimshottari_dasa": vimshottari_dasa,
+    #     # "planets_data": [planet._asdict() for planet in planets_data],
+    #     # "houses_data": [house._asdict() for house in houses_data],
+    #     # "planet_significators": planet_significators,
+    #     # "planetary_aspects": planetary_aspects,
+    #     # "house_significators": house_significators,
+    #     # "consolidated_chart_data": consolidated_chart_data
+    # }
+
+
+@app.post("/get_chart_data")
+async def get_chart_data(horo_input: ChartInput):
+    """
+    Generates all data for a given time and location as per KP Astrology system
+    Returns data as a list of dictionaries with named fields for each planet/point
+    """
+    horoscope = VedicAstro.VedicHoroscopeData(year=horo_input.year, month=horo_input.month, day=horo_input.day,
+                                           hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+                                           tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+                                           ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system)
+    chart = horoscope.generate_chart()
     planets_data = horoscope.get_planets_data_from_chart(chart)
     houses_data = horoscope.get_houses_data_from_chart(chart)
-    planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
-    planetary_aspects = horoscope.get_planetary_aspects(chart)
-    house_significators = horoscope.get_house_wise_significators(planets_data, houses_data)
-    vimshottari_dasa_table = horoscope.compute_vimshottari_dasa(chart)
     consolidated_chart_data = horoscope.get_consolidated_chart_data(planets_data=planets_data,
                                                                     houses_data=houses_data,
-                                                                    return_style = input.return_style)
+                                                                    return_style = horo_input.return_style)
 
-    return {
-        "planets_data": [planet._asdict() for planet in planets_data],
-        "houses_data": [house._asdict() for house in houses_data],
-        "planet_significators": planet_significators,
-        "planetary_aspects": planetary_aspects,
-        "house_significators": house_significators,
-        "vimshottari_dasa_table": vimshottari_dasa_table,
-        "consolidated_chart_data": consolidated_chart_data
-    }
+
+    # Convert NamedTuple to list of dictionaries with named fields
+    formatted_data = []
+    for planet in planets_data:
+        planet_dict = {
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "isRetroGrade": planet.isRetroGrade,
+            "LonDecDeg": planet.LonDecDeg,
+            "SignLonDMS": planet.SignLonDMS,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "LatDMS": planet.LatDMS,
+            "Nakshatra": planet.Nakshatra,
+            "Rasi Lord": planet.RasiLord,
+            "Nakshatra Lord": planet.NakshatraLord,
+            "Sub Lord": planet.SubLord,
+            "Sub Sub Lord": planet.SubSubLord,
+            "House Number": planet.HouseNr
+        }
+        formatted_data.append(planet_dict)
+
+    return consolidated_chart_data
 
 @app.post("/get_all_horary_data")
 async def get_horary_data(input: HoraryChartInput):
@@ -112,3 +168,14 @@ async def get_horary_data(input: HoraryChartInput):
         "vimshottari_dasa_table": vimshottari_dasa_table,
         "consolidated_chart_data": consolidated_chart_data
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "VedicAstroAPI:app",
+        host="0.0.0.0",
+        port=8088,
+        reload=True,           # Enable auto-reload
+        reload_dirs=["./"],    # Directories to watch for changes
+        workers=1              # Number of worker processes
+    )

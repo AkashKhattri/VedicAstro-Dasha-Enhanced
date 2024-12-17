@@ -3,7 +3,7 @@ from timezonefinder import TimezoneFinder
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 
-## 
+##
 def clean_select_objects_split_str(input_str):
     """Rename and Clean certain chart objects like North, South Node and Fortuna"""
     cleaned_str = (input_str.strip('<').strip('>')
@@ -24,7 +24,7 @@ def pretty_data_table(named_tuple_data : list):
     table = PrettyTable()
 
     # Add field names (column headers)
-    table.field_names = named_tuple_data[0]._fields 
+    table.field_names = named_tuple_data[0]._fields
 
     # Add rows
     for data in named_tuple_data:
@@ -52,7 +52,7 @@ def dms_to_mins(dms_str: str):
     minutes = int(dms[1])
     seconds = int(dms[2])
     total_minutes = degrees * 60 + minutes + seconds / 60
-    return round(total_minutes, 2)  
+    return round(total_minutes, 2)
 
 def dms_difference(dms1_str: str, dms2_str: str):
     """
@@ -132,15 +132,16 @@ def compute_new_date(start_date : tuple, diff_value : float, direction: str):
 def get_utc_offset(timezone_loc : str, date: datetime):
     """
     Returns the UTC offset as a timedelta for a given latitude, longitude, and date.
-    
+
     Parameters:
     - timezone_loc (str) : The timezone location to compute tz info (Eg: America/New_York)
     - date (datetime): The date for which to find the UTC offset.
-    
+
     Returns:
     - timedelta: UTC offset as a timedelta object.
     """
     # Get the timezone object
+
     timezone = pytz.timezone(timezone_loc)
 
     # Localize the date to the timezone
@@ -153,7 +154,7 @@ def get_utc_offset(timezone_loc : str, date: datetime):
 
     # Format the offset as a string
     sign = "+" if utc_offset_sec >= 0 else "-"
-    utc_offset_str = f"{sign}{int(hours):02}:{int(minutes):02}"    
+    utc_offset_str = f"{sign}{int(hours):02}:{int(minutes):02}"
 
     # Convert seconds to a timedelta
     utc_offset = timedelta(seconds=utc_offset_sec)

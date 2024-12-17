@@ -137,24 +137,12 @@ def compute_vimshottari_dasa(chart: Chart, birth_year, birth_month, birth_day, b
 
     return vimshottari_dasa
 
-def compute_vimshottari_dasa_example():
-    # Step 1: Define birth details
-    year = 2024
-    month = 12
-    day = 1
-    hour = 13
-    minute = 20
-    second = 0
+def compute_vimshottari_dasa_enahanced(year, month, day, hour, minute, second, latitude, longitude, utc, ayanamsa=None, house_system=None):
 
-    # Step 2: Define location details
-    latitude = 11.020085773931049
-    longitude = 76.98319647719487
-    utc = "+5:30"
-
-    # Step 3: Define astrological settings
-    ayanamsa = "Lahiri"
-    house_system = "Placidus"  # Default House system for Krishnamurti Paddhati system
-
+    if ayanamsa is None:
+        ayanamsa = "Lahiri"
+    if house_system is None:
+        house_system = "Placidus"
     # Step 4: Create VedicHoroscopeData instance
     vhd = VedicHoroscopeData(
         year=year,
@@ -163,7 +151,7 @@ def compute_vimshottari_dasa_example():
         hour=hour,
         minute=minute,
         second=second,
-        utc=utc,
+        tz=utc,
         latitude=latitude,
         longitude=longitude,
         ayanamsa=ayanamsa,
@@ -201,11 +189,10 @@ def compute_vimshottari_dasa_example():
                 bhukti_data['pratyantars'] = {}  # Add empty dict if missing
 
     # Save to JSON file
-    with open(output_filename, 'w', encoding='utf-8') as f:
-        json.dump(data_to_save, f, indent=2, ensure_ascii=False)
+    # with open(output_filename, 'w', encoding='utf-8') as f:
+    #     json.dump(data_to_save, f, indent=2, ensure_ascii=False)
 
-    print(f"Data saved to {output_filename}")
+    return str(vimshottari_dasa)
 
 
-if __name__ == "__main__":
-    compute_vimshottari_dasa_example()
+
