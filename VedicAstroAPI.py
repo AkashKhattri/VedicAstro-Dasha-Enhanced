@@ -136,7 +136,7 @@ async def get_chart_data(horo_input: ChartInput):
         }
         formatted_data.append(planet_dict)
 
-    return consolidated_chart_data
+    return str(consolidated_chart_data)
 
 @app.post("/get_all_horary_data")
 async def get_horary_data(input: HoraryChartInput):
