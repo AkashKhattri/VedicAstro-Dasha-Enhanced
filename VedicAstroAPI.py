@@ -6,9 +6,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from vedicastro import VedicAstro, horary_chart
 from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced
 from vedicastro.utils import pretty_data_table
-
+from d_chart_calculation import (calculate_d2_position,
+                                 calculate_d3_position,
+                                 calculate_d4_position,
+                                 calculate_d5_position,
+                                 calculate_d7_position,
+                                 calculate_d9_position)
 
 app = FastAPI()
+
+zodiac_signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+                "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
 
 class ChartInput(BaseModel):
     year: int
@@ -60,14 +68,6 @@ async def get_chart_data(horo_input: ChartInput):
     Generates all data for a given time and location, based on the selected ayanamsa & house system
     """
 
-
-    # chart = horoscope.generate_chart()
-
-    # planets_data = horoscope.get_planets_data_from_chart(chart)
-    # houses_data = horoscope.get_houses_data_from_chart(chart)
-    # planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
-    # planetary_aspects = horoscope.get_planetary_aspects(chart)
-    # house_significators = horoscope.get_house_wise_significators(planets_data, houses_data)
     vimshottari_dasa = compute_vimshottari_dasa_enahanced(
         horo_input.year,
         horo_input.month,
@@ -81,22 +81,8 @@ async def get_chart_data(horo_input: ChartInput):
         horo_input.ayanamsa,
         horo_input.house_system
     )
-    # consolidated_chart_data = horoscope.get_consolidated_chart_data(planets_data=planets_data,
-    #                                                                 houses_data=houses_data,
-    #                                                                 return_style = horo_input.return_style)
 
     return vimshottari_dasa
-
-    # return {
-    #     "vimshottari_dasa": vimshottari_dasa,
-    #     # "planets_data": [planet._asdict() for planet in planets_data],
-    #     # "houses_data": [house._asdict() for house in houses_data],
-    #     # "planet_significators": planet_significators,
-    #     # "planetary_aspects": planetary_aspects,
-    #     # "house_significators": house_significators,
-    #     # "consolidated_chart_data": consolidated_chart_data
-    # }
-
 
 @app.post("/get_chart_data")
 async def get_chart_data(horo_input: ChartInput):
@@ -136,7 +122,292 @@ async def get_chart_data(horo_input: ChartInput):
         }
         formatted_data.append(planet_dict)
 
-    return str(consolidated_chart_data)
+    return (formatted_data)
+
+@app.post("/get_d2_chart_data")
+async def get_chart_data(horo_input: ChartInput, method: str = "yavana"):
+    """
+    Generates the Hora (D-2) chart data as per the selected method.
+    """
+    # Generate the natal chart using the VedicAstro library
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year, month=horo_input.month, day=horo_input.day,
+        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+    )
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+
+    # Format the natal chart data into a list of dictionaries
+    formatted_data = []
+    for planet in planets_data:
+        formatted_data.append({
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "House Number": planet.HouseNr
+        })
+
+
+
+    # Calculate the D-2 chart
+    d2_chart = []
+    for planet in formatted_data:
+        current_sign = planet["Rasi"]
+        sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+        # Calculate the D-2 position
+        new_sign, new_degree = calculate_d2_position(current_sign, sign_lon_dec_deg)
+
+        # Append to the D-2 chart
+        d2_chart.append({
+            "Object": planet["Object"],
+            "Current Sign": current_sign,
+            "Current Sign Index": zodiac_signs.index(current_sign) + 1,
+            "D-2 Rasi": new_sign,
+            "D-2 Degree": new_degree,
+            "House Number": planet["House Number"]
+        })
+
+    return d2_chart
+
+@app.post("/get_d3_chart_data")
+async def get_d3_chart_data(horo_input: ChartInput, method: str = "yavana"):
+    """
+    Generates the Drekkana (D-3) chart data as per the selected method.
+    """
+    # Generate the natal chart using the VedicAstro library
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year, month=horo_input.month, day=horo_input.day,
+        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+    )
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+
+    # Format the natal chart data into a list of dictionaries
+    formatted_data = []
+    for planet in planets_data:
+        formatted_data.append({
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "House Number": planet.HouseNr
+        })
+
+
+    # Calculate the D-3 chart
+    d3_chart = []
+    for planet in formatted_data:
+        current_sign = planet["Rasi"]
+        sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+        # Calculate the D-3 position
+        new_sign, new_degree = calculate_d3_position(current_sign, sign_lon_dec_deg)
+
+        # Append to the D-3 chart
+        d3_chart.append({
+            "Object": planet["Object"],
+            "Current Sign": current_sign,
+            "Current Sign Index": zodiac_signs.index(current_sign) + 1,
+            "D-3 Rasi": new_sign,
+            "D-3 Degree": new_degree,
+            "House Number": planet["House Number"]
+        })
+
+    return d3_chart
+
+@app.post("/get_d4_chart_data")
+async def get_d4_chart_data(horo_input: ChartInput):
+    """
+    Generates the Chaturthamsa (D-4) chart data as per Yavana Paddhati.
+    """
+    # Generate the natal chart using the VedicAstro library
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year, month=horo_input.month, day=horo_input.day,
+        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+    )
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+
+    # Format the natal chart data into a list of dictionaries
+    formatted_data = []
+    for planet in planets_data:
+        formatted_data.append({
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "House Number": planet.HouseNr
+        })
+
+    # Calculate the D-4 chart
+    d4_chart = []
+    for planet in formatted_data:
+        current_sign = planet["Rasi"]
+        sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+        # Calculate the D-4 position
+        new_sign, new_degree = calculate_d4_position(current_sign, sign_lon_dec_deg)
+
+        # Append to the D-4 chart
+        d4_chart.append({
+            "Object": planet["Object"],
+            "Current Sign": current_sign,
+            "Current Sign Index": zodiac_signs.index(current_sign) + 1,  # Add 1 for 1-based index
+            "D-4 Rasi": new_sign,
+            "D-4 Degree": new_degree,
+            "House Number": planet["House Number"]
+        })
+
+    return d4_chart
+
+
+#! Problem in D-5 chart calculation
+@app.post("/get_d5_chart_data")
+async def get_d5_chart_data(horo_input: ChartInput):
+    """
+    Generates the Panchamsha (D-5) chart data as per Yavana Paddhati.
+    """
+    # Generate the natal chart using the VedicAstro library
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year, month=horo_input.month, day=horo_input.day,
+        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+    )
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+
+    # Format the natal chart data into a list of dictionaries
+    formatted_data = []
+    for planet in planets_data:
+        formatted_data.append({
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "House Number": planet.HouseNr
+        })
+
+    # Calculate the D-5 chart
+    d5_chart = []
+    for planet in formatted_data:
+        current_sign = planet["Rasi"]
+        sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+        # Calculate the D-5 position
+        new_sign, new_degree = calculate_d5_position(current_sign, sign_lon_dec_deg)
+
+        # Append to the D-5 chart
+        d5_chart.append({
+            "Object": planet["Object"],
+            "Current Sign": current_sign,
+            "Current Sign Index": zodiac_signs.index(current_sign) + 1,  # Add 1 for 1-based index
+            "D-5 Rasi": new_sign,
+            "D-5 Degree": new_degree,
+            "House Number": planet["House Number"]
+        })
+
+    return d5_chart
+
+
+@app.post("/get_d7_chart_data")
+async def get_d7_chart_data(horo_input: ChartInput):
+    """
+    Generates the Saptamsha (D-7) chart data based on the image logic.
+    """
+    # Generate the natal chart using the VedicAstro library
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year, month=horo_input.month, day=horo_input.day,
+        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+    )
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+
+    # Format the natal chart data into a list of dictionaries
+    formatted_data = []
+    for planet in planets_data:
+        formatted_data.append({
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "House Number": planet.HouseNr
+        })
+
+    # Calculate the D-7 chart
+    d7_chart = []
+    for planet in formatted_data:
+        current_sign = planet["Rasi"]
+        sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+        # Calculate the D-7 position
+        new_sign, new_degree = calculate_d7_position(current_sign, sign_lon_dec_deg)
+
+        # Append to the D-7 chart
+        d7_chart.append({
+            "Object": planet["Object"],
+            "Current Sign": current_sign,
+            "Current Sign Index": zodiac_signs.index(current_sign) + 1,
+            "D-7 Rasi": new_sign,
+            "D-7 Sign Index": zodiac_signs.index(new_sign) + 1,
+            "D-7 Degree": new_degree,
+            "House Number": planet["House Number"]
+        })
+
+    return d7_chart
+
+
+@app.post("/get_d9_chart_data")
+async def get_d9_chart_data(horo_input: ChartInput):
+    """
+    Generates the Navamsa (D-9) chart data based on the element of the signs.
+    """
+    # Generate the natal chart using the VedicAstro library
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year, month=horo_input.month, day=horo_input.day,
+        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+    )
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+
+    # Format the natal chart data into a list of dictionaries
+    formatted_data = []
+    for planet in planets_data:
+        formatted_data.append({
+            "Object": planet.Object,
+            "Rasi": planet.Rasi,
+            "SignLonDecDeg": planet.SignLonDecDeg,
+            "House Number": planet.HouseNr
+        })
+
+    # Calculate the D-9 chart
+    d9_chart = []
+    for planet in formatted_data:
+        current_sign = planet["Rasi"]
+        sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+        # Calculate the D-9 position
+        new_sign, new_degree = calculate_d9_position(current_sign, sign_lon_dec_deg)
+
+        # Append to the D-9 chart
+        d9_chart.append({
+            "Object": planet["Object"],
+            "Current Sign": current_sign,
+            "Current Sign Index": zodiac_signs.index(current_sign) + 1,  # Add 1 for 1-based index
+            "D-9 Rasi": new_sign,
+            "D-9 Sign Index": zodiac_signs.index(new_sign) + 1,
+            "D-9 Degree": new_degree,
+            "House Number": planet["House Number"]
+        })
+
+    return d9_chart
 
 @app.post("/get_all_horary_data")
 async def get_horary_data(input: HoraryChartInput):
