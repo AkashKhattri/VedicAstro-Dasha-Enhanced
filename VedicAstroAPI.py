@@ -112,7 +112,7 @@ async def get_chart_data(horo_input: ChartInput):
                                                                     houses_data=houses_data,
                                                                     return_style = horo_input.return_style)
 
-
+    return format_consolidated_chart_data(consolidated_chart_data)
     # Convert NamedTuple to list of dictionaries with named fields
     formatted_data = []
     for planet in planets_data:
@@ -378,47 +378,64 @@ async def get_d9_chart_data(horo_input: ChartInput):
     """
     Generates the Navamsa (D-9) chart data based on the element of the signs.
     """
-    # Generate the natal chart using the VedicAstro library
-    horoscope = VedicAstro.VedicHoroscopeData(
-        year=horo_input.year, month=horo_input.month, day=horo_input.day,
-        hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
-        tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
-        ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
-    )
-    chart = horoscope.generate_chart()
-    planets_data = horoscope.get_planets_data_from_chart(chart)
+    try:
+        # Generate the natal chart using the VedicAstro library
+        horoscope = VedicAstro.VedicHoroscopeData(
+            year=horo_input.year, month=horo_input.month, day=horo_input.day,
+            hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+            tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+            ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system
+        )
 
-    # Format the natal chart data into a list of dictionaries
-    formatted_data = []
-    for planet in planets_data:
-        formatted_data.append({
-            "Object": planet.Object,
-            "Rasi": planet.Rasi,
-            "SignLonDecDeg": planet.SignLonDecDeg,
-            "House Number": planet.HouseNr
-        })
 
-    # Calculate the D-9 chart
-    d9_chart = []
-    for planet in formatted_data:
-        current_sign = planet["Rasi"]
-        sign_lon_dec_deg = planet["SignLonDecDeg"]
+        chart = horoscope.generate_chart()
 
-        # Calculate the D-9 position
-        new_sign, new_degree = calculate_d9_position(current_sign, sign_lon_dec_deg)
 
-        # Append to the D-9 chart
-        d9_chart.append({
-            "Object": planet["Object"],
-            "Current Sign": current_sign,
-            "Current Sign Index": zodiac_signs.index(current_sign) + 1,  # Add 1 for 1-based index
-            "D-9 Rasi": new_sign,
-            "D-9 Sign Index": zodiac_signs.index(new_sign) + 1,
-            "D-9 Degree": new_degree,
-            "House Number": planet["House Number"]
-        })
+        planets_data = horoscope.get_planets_data_from_chart(chart)
 
-    return d9_chart
+
+        formatted_data = []
+        for planet in planets_data:
+            formatted_data.append({
+                "Object": planet.Object,
+                "Rasi": planet.Rasi,
+                "SignLonDecDeg": planet.SignLonDecDeg,
+                "House Number": planet.HouseNr
+            })
+
+        # Calculate the D-9 chart
+        d9_chart = []
+        for planet in formatted_data:
+            current_sign = planet["Rasi"]
+            sign_lon_dec_deg = planet["SignLonDecDeg"]
+
+            # Calculate the D-9 position with error handling
+            try:
+
+                new_sign, new_degree = calculate_d9_position(current_sign, sign_lon_dec_deg)
+            except Exception as e:
+
+                return {"error": f"Error calculating D-9 position for {planet['Object']}: {str(e)}"}
+
+            # Append to the D-9 chart
+            d9_chart.append({
+                "Object": planet["Object"],
+                "Current Sign": current_sign,
+                "Current Sign Index": zodiac_signs.index(current_sign) + 1,  # Add 1 for 1-based index
+                "D-9 Rasi": new_sign,
+                "D-9 Sign Index": zodiac_signs.index(new_sign) + 1,
+                "D-9 Degree": new_degree,
+
+            })
+
+        return d9_chart
+
+    except Exception as e:
+
+        import traceback
+        error_details = traceback.format_exc()
+
+        return {"error": str(e), "details": error_details}
 
 @app.post("/get_d10_chart_data")
 async def get_d10_chart_data(horo_input: ChartInput):
@@ -836,13 +853,56 @@ async def get_horary_data(input: HoraryChartInput):
         "consolidated_chart_data": consolidated_chart_data
     }
 
+def format_consolidated_chart_data(data):
+    formatted_data = []
 
+    # First, create a mapping of signs to house numbers
+    sign_to_house = {}
+    for sign, objects in data.items():
+        for obj_name, obj_data in objects.items():
+            if obj_name in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]:
+                house_num = roman_to_int(obj_name)
+                sign_to_house[sign] = house_num
 
+    # Then create entries for all planets with their house numbers
+    for sign, objects in data.items():
+        for obj_name, obj_data in objects.items():
+            # Skip house cusps, process only planets and points
+            if obj_name not in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]:
+                obj_entry = {
+                    "Object": obj_name,
+                    "Rasi": sign,
+                    "isRetroGrade": obj_data.get("is_Retrograde", False),
+                    "LonDecDeg": obj_data.get("LonDecDeg"),
+                    "SignLonDMS": obj_data.get("SignLonDMS"),
+                    "SignLonDecDeg": obj_data.get("SignLonDecDeg"),
+                    "House Number": sign_to_house.get(sign)
+                }
+                formatted_data.append(obj_entry)
+
+    return formatted_data
+
+def roman_to_int(roman):
+    """Convert Roman numeral to integer"""
+    values = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+
+    result = 0
+    prev_value = 0
+
+    for char in reversed(roman):
+        current_value = values[char]
+        if current_value >= prev_value:
+            result += current_value
+        else:
+            result -= current_value
+        prev_value = current_value
+
+    return result
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "VedicAstroAPI:app",
+        "vedicastroapi:app",
         host="0.0.0.0",
         port=8088,
         reload=True,           # Enable auto-reload

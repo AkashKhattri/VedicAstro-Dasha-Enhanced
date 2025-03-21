@@ -335,7 +335,7 @@ class VedicHoroscopeData:
         planet_in_house = self.get_planet_in_house(planets_chart = chart, houses_chart = new_houses_chart) if new_houses_chart \
                         else self.get_planet_in_house(planets_chart = chart, houses_chart = chart)
 
-        ### Get Ascendant Data
+
         ascendant_data = self.get_ascendant_data(asc_data = chart.get(const.ASC), PlanetsDataCollection = PlanetsData)
 
         planets_data = []
