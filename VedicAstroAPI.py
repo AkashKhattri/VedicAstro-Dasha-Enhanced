@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
-from fastapi import FastAPI
-from concurrent.futures import ThreadPoolExecutor
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from concurrent.futures import ThreadPoolExecutor
 from vedicastro import VedicAstro, horary_chart
 from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced
 from vedicastro.utils import pretty_data_table
@@ -20,6 +21,10 @@ from d_chart_calculation import (calculate_d2_position,
                                  calculate_d27_position,
                                  calculate_d30_position,
                                  calculate_d40_position)
+import os
+import csv
+from datetime import datetime, timedelta
+import io
 
 app = FastAPI()
 
@@ -276,7 +281,6 @@ async def get_d4_chart_data(horo_input: ChartInput):
 
     return d4_chart
 
-
 #! Problem in D-5 chart calculation
 @app.post("/get_d5_chart_data")
 async def get_d5_chart_data(horo_input: ChartInput):
@@ -324,7 +328,6 @@ async def get_d5_chart_data(horo_input: ChartInput):
 
     return d5_chart
 
-
 @app.post("/get_d7_chart_data")
 async def get_d7_chart_data(horo_input: ChartInput):
     """
@@ -371,7 +374,6 @@ async def get_d7_chart_data(horo_input: ChartInput):
         })
 
     return d7_chart
-
 
 @app.post("/get_d9_chart_data")
 async def get_d9_chart_data(horo_input: ChartInput):
@@ -483,7 +485,6 @@ async def get_d10_chart_data(horo_input: ChartInput):
         })
 
     return d10_chart
-
 
 @app.post("/get_d12_chart_data")
 async def get_d12_chart_data(horo_input: ChartInput):
@@ -898,6 +899,603 @@ def roman_to_int(roman):
         prev_value = current_value
 
     return result
+
+
+@app.post("/get_planet_transit_data")
+async def get_planet_transit_data(horo_input: ChartInput, start_year: int = 2000, end_year: int = 2050, filename: str = None):
+    """
+    Generates the simplified planet transit data for a range of years.
+    Returns only timestamp, planet name, and planet sign.
+    Also stores the data as a CSV file in the current directory.
+
+    Parameters:
+    ----------
+    horo_input: ChartInput
+        The base chart input data (birth details)
+    start_year: int, optional (default=2000)
+        The starting year for transit calculations
+    end_year: int, optional (default=2050)
+        The ending year for transit calculations
+    filename: str, optional (default=None)
+        Custom filename for the CSV output. If None, a default name will be generated.
+    """
+    try:
+        all_transit_data = []
+
+        # Validate input years
+        if start_year >= end_year:
+            return {"status": "error", "message": "start_year must be less than end_year"}
+
+        if end_year - start_year > 100:
+            return {"status": "error", "message": "Maximum range of 100 years is allowed"}
+
+        # Loop through each year in the range
+        for year in range(start_year, end_year + 1):
+            # Create a new VedicHoroscopeData object for each year
+            horoscope = VedicAstro.VedicHoroscopeData(
+                year=year,
+                month=horo_input.month,
+                day=horo_input.day,
+                hour=horo_input.hour,
+                minute=horo_input.minute,
+                second=horo_input.second,
+                latitude=horo_input.latitude,
+                longitude=horo_input.longitude,
+                tz=horo_input.utc,
+                ayanamsa=horo_input.ayanamsa,
+                house_system=horo_input.house_system
+            )
+
+            # Get transit details for this year
+            transit_data = horoscope.get_transit_details()
+
+            # Extract only timestamp, PlanetName, and PlanetSign
+            for transit in transit_data:
+                simplified_transit = {
+                    "timestamp": transit.timestamp,
+                    "PlanetName": transit.PlanetName,
+                    "PlanetSign": transit.PlanetSign,
+                    "isRetrograde": transit.isRetrograde,
+                    "Nakshatra": transit.Nakshatra,
+                    "NakshatraLord": transit.NakshatraLord,
+                    "SubLord": transit.SubLord,
+                    "SubLordSign": transit.SubLordSign
+                }
+                all_transit_data.append(simplified_transit)
+
+
+        return {
+            "status": "success",
+            "transit_data": all_transit_data,
+            "range": f"{start_year} to {end_year}",
+            "total_records": len(all_transit_data),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/generate_json_file_transit_data")
+async def generate_json_file_transit_data(
+    horo_input: ChartInput = None,
+    start_year: int = 1990,
+    end_year: int = 2100,
+    filename: str = None
+):
+    """
+    Generates a JSON file with the transit data from start_year to end_year.
+    Data is grouped by planet and sign, showing date ranges for each planet's
+    stay in a sign (e.g., "Sun in Sagittarius from 1/1/2024 to 1/19/2024").
+
+    If no chart input is provided, uses default coordinates for New Delhi, India.
+
+    Parameters:
+    ----------
+    horo_input: ChartInput, optional
+        The chart input data. If None, defaults to New Delhi coordinates.
+    start_year: int, default=2024
+        The starting year for transit calculations
+    end_year: int, default=2026
+        The ending year for transit calculations
+    filename: str, optional
+        Custom filename for the JSON output. If None, a default name will be generated.
+
+    Returns:
+    -------
+    FileResponse
+        A downloadable JSON file with transit data grouped by planet and sign
+    """
+    try:
+        # Use New Delhi coordinates if no input is provided
+        if horo_input is None:
+            horo_input = ChartInput(
+                year=2000,  # Arbitrary base year
+                month=1,
+                day=1,
+                hour=12,
+                minute=0,
+                second=0,
+                utc="+05:30",  # India Standard Time
+                latitude=28.6139,  # New Delhi latitude
+                longitude=77.2090,  # New Delhi longitude
+                ayanamsa="Krishnamurti",
+                house_system="Placidus"
+            )
+
+        # Validate input years
+        if start_year >= end_year:
+            return {"status": "error", "message": "start_year must be less than end_year"}
+
+        # if end_year - start_year > 200:
+        #     return {"status": "error", "message": "Maximum range of 200 years is allowed for transit calculations"}
+
+        # Dictionary to track each planet's position over time
+        # Structure: {planet_name: [{sign: "...", start_date: "...", end_date: "...", retrograde: bool}, ...]}
+        planet_transits = {}
+
+        # Create start and end dates
+        start_date = datetime(start_year, 1, 1)
+        end_date = datetime(end_year, 12, 31)
+
+        # Current state tracking for each planet
+        current_planet_states = {}  # {planet_name: (sign, start_date, is_retrograde)}
+
+        # Loop through each day in the range
+        current_date = start_date
+        while current_date <= end_date:
+            # Create a new VedicHoroscopeData object for each day
+            horoscope = VedicAstro.VedicHoroscopeData(
+                year=current_date.year,
+                month=current_date.month,
+                day=current_date.day,
+                hour=horo_input.hour,
+                minute=horo_input.minute,
+                second=horo_input.second,
+                latitude=horo_input.latitude,
+                longitude=horo_input.longitude,
+                tz=horo_input.utc,
+                ayanamsa=horo_input.ayanamsa,
+                house_system=horo_input.house_system
+            )
+
+            # Get transit details for this day
+            transit_data = horoscope.get_transit_details()
+
+            # Format date string (M/D/YYYY)
+            month_str = str(current_date.month)
+            day_str = str(current_date.day)
+            year_str = str(current_date.year)
+            date_str = f"{month_str}/{day_str}/{year_str}"
+
+            # Process each planet's transit
+            for transit in transit_data:
+                planet_name = transit.PlanetName
+                sign = transit.PlanetSign
+                is_retrograde = transit.isRetrograde
+
+                # Initialize if this planet hasn't been seen before
+                if planet_name not in planet_transits:
+                    planet_transits[planet_name] = []
+
+                # Check if this is a new entry or the sign has changed
+                if planet_name not in current_planet_states:
+                    # First time seeing this planet
+                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
+                elif current_planet_states[planet_name][0] != sign or current_planet_states[planet_name][2] != is_retrograde:
+                    # Sign or retrograde status changed - record the previous state
+                    prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
+
+                    planet_transits[planet_name].append({
+                        "sign": prev_sign,
+                        "start_date": prev_start,
+                        "end_date": date_str,  # Yesterday's date as end date
+                        "isRetrograde": prev_retro
+                    })
+
+                    # Update current state with new sign
+                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
+
+            # Move to the next day
+            current_date += timedelta(days=1)
+
+        # Record final states for all planets (using end_date as the end)
+        end_date_str = f"{end_date.year}-{end_date.month:02d}-{end_date.day:02d}"
+        for planet_name, (sign, start_date, is_retrograde) in current_planet_states.items():
+            planet_transits[planet_name].append({
+                "sign": sign,
+                "start_date": start_date,
+                "end_date": end_date_str,
+                "isRetrograde": is_retrograde
+            })
+
+        # Special handling for Moon planet only - convert to compact string format
+        if "Moon" in planet_transits:
+            moon_data = []
+            for transit in planet_transits["Moon"]:
+                # Convert sign to number (1-12)
+                sign_number = zodiac_signs.index(transit["sign"]) + 1
+
+                # Calculate days in this transit period
+                start_date_obj = datetime.strptime(transit["start_date"], "%Y-%m-%d")
+                end_date_obj = datetime.strptime(transit["end_date"], "%Y-%m-%d")
+                days = (end_date_obj - start_date_obj).days
+
+                # Format as "sign:start_date:days:is_retrograde"
+                is_retro_int = 1 if transit["isRetrograde"] else 0
+                moon_data.append(f"{sign_number}:{transit['start_date']}:{days}:{is_retro_int}")
+
+            # Replace the Moon's data with the compact string format
+            planet_transits["Moon"] = "|".join(moon_data)
+
+        # Return the entire dictionary with all planets
+        import json
+        return json.dumps(planet_transits, separators=(',', ':'))
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": str(e), "details": error_details}
+
+
+
+def generate_transit_markdown(transits_data):
+    markdown = "# Planetary Transits\n\n"
+
+    for planet_data in transits_data:
+        planet = planet_data["planet"]
+        markdown += f"## {planet}\n\n"
+
+        for transit in planet_data["transits"]:
+            sign = transit["sign"]
+            start = transit["start_date"]
+            end = transit["end_date"]
+            retrograde = "♺ Retrograde" if transit["isRetrograde"] else "Direct"
+
+            markdown += f"- **{sign}**: {start} to {end} ({retrograde})\n"
+
+        markdown += "\n"
+
+    return markdown
+
+class TransitDataRequest(BaseModel):
+    horo_input:ChartInput
+    start_year:int
+    end_year:int
+    planets:List[str]
+
+@app.post("/generate_compact_transit_data")
+async def generate_compact_transit_data(
+    transit_data_request: TransitDataRequest
+):
+    try:
+        start_year = transit_data_request.start_year
+        end_year = transit_data_request.end_year
+        planets = transit_data_request.planets
+        horo_input = transit_data_request.horo_input
+
+        # Validate input years
+        if start_year >= end_year:
+            return {"status": "error", "message": "start_year must be less than end_year"}
+
+        # Always exclude these planets
+        excluded_planets = ["Uranus", "Neptune", "Pluto"]
+
+        # If planets parameter is provided, use it for filtering
+        # Otherwise, include all valid planets by default
+        include_planets = None
+        if planets:
+            # Convert to set for faster lookups
+            include_planets = set(planets)
+
+        # Dictionary to track each planet's position over time
+        planet_transits = {}
+
+        # Create start and end dates
+        start_date = datetime(start_year, 1, 1)
+        end_date = datetime(end_year, 12, 31)
+
+        # Current state tracking for each planet
+        current_planet_states = {}  # {planet_name: (sign, start_date, is_retrograde)}
+
+        # Loop through each day in the range
+        current_date = start_date
+        while current_date <= end_date:
+            # Create a new VedicHoroscopeData object for each day
+            horoscope = VedicAstro.VedicHoroscopeData(
+                year=current_date.year,
+                month=current_date.month,
+                day=current_date.day,
+                hour=horo_input.hour,
+                minute=horo_input.minute,
+                second=horo_input.second,
+                latitude=horo_input.latitude,
+                longitude=horo_input.longitude,
+                tz=horo_input.utc,
+                ayanamsa=horo_input.ayanamsa,
+                house_system=horo_input.house_system
+            )
+
+            # Get transit details for this day
+            transit_data = horoscope.get_transit_details()
+
+            # Format date string (YYYY-MM-DD)
+            date_str = f"{current_date.year}-{current_date.month:02d}-{current_date.day:02d}"
+
+            # Process each planet's transit
+            for transit in transit_data:
+                planet_name = transit.PlanetName
+
+                # Skip excluded planets
+                if planet_name in excluded_planets:
+                    continue
+
+                # Skip planets not in the include list (if specified)
+                if include_planets is not None and planet_name not in include_planets:
+                    continue
+
+                sign = transit.PlanetSign
+                is_retrograde = transit.isRetrograde
+
+                # Initialize if this planet hasn't been seen before
+                if planet_name not in planet_transits:
+                    planet_transits[planet_name] = []
+
+                # Check if this is a new entry or the sign has changed
+                if planet_name not in current_planet_states:
+                    # First time seeing this planet
+                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
+                elif current_planet_states[planet_name][0] != sign or current_planet_states[planet_name][2] != is_retrograde:
+                    # Sign or retrograde status changed - record the previous state
+                    prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
+
+                    planet_transits[planet_name].append({
+                        "sign": prev_sign,
+                        "start_date": prev_start,
+                        "end_date": date_str,  # Yesterday's date as end date
+                        "isRetrograde": prev_retro
+                    })
+
+                    # Update current state with new sign
+                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
+
+            # Move to the next day
+            current_date += timedelta(days=1)
+
+        # Record final states for all planets (using end_date as the end)
+        end_date_str = f"{end_date.year}-{end_date.month:02d}-{end_date.day:02d}"
+        for planet_name, (sign, start_date, is_retrograde) in current_planet_states.items():
+            planet_transits[planet_name].append({
+                "sign": sign,
+                "start_date": start_date,
+                "end_date": end_date_str,
+                "isRetrograde": is_retrograde
+            })
+
+        # Special handling for Moon planet only - convert to compact string format
+        if "Moon" in planet_transits:
+            moon_data = []
+            for transit in planet_transits["Moon"]:
+                # Convert sign to number (1-12)
+                sign_number = zodiac_signs.index(transit["sign"]) + 1
+
+                # Calculate days in this transit period
+                start_date_obj = datetime.strptime(transit["start_date"], "%Y-%m-%d")
+                end_date_obj = datetime.strptime(transit["end_date"], "%Y-%m-%d")
+                days = (end_date_obj - start_date_obj).days
+
+                # Format as "sign:start_date:days:is_retrograde"
+                is_retro_int = 1 if transit["isRetrograde"] else 0
+                moon_data.append(f"{sign_number}:{transit['start_date']}:{days}:{is_retro_int}")
+
+            # Replace the Moon's data with the compact string format
+            planet_transits["Moon"] = "|".join(moon_data)
+
+
+        return str(planet_transits).replace(" ", '')
+
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": str(e), "details": error_details}
+
+
+
+def generate_transit_markdown(transits_data):
+    markdown = "# Planetary Transits\n\n"
+
+    for planet_data in transits_data:
+        planet = planet_data["planet"]
+        markdown += f"## {planet}\n\n"
+
+        for transit in planet_data["transits"]:
+            sign = transit["sign"]
+            start = transit["start_date"]
+            end = transit["end_date"]
+            retrograde = "♺ Retrograde" if transit["isRetrograde"] else "Direct"
+
+            markdown += f"- **{sign}**: {start} to {end} ({retrograde})\n"
+
+        markdown += "\n"
+
+    return markdown
+
+@app.post("/generate_markdown_transit_data")
+async def generate_markdown_transit_data(
+    horo_input: ChartInput = None,
+    start_year: int = 1993,
+    end_year: int = 2025,
+    planets: List[str] = None  # New parameter to specify which planets to include
+):
+    """
+    Generates highly optimized markdown transit data using minimal tokens.
+    Excludes Uranus, Neptune, and Pluto from results.
+
+    Parameters:
+    ----------
+    horo_input: ChartInput, optional
+        The chart input data. If None, defaults to New Delhi coordinates.
+    start_year: int, default=1993
+        The starting year for transit calculations
+    end_year: int, default=2025
+        The ending year for transit calculations
+    planets: List[str], optional
+        List of planets to include in the results (e.g., ["Sun", "Moon", "Saturn"]).
+        If not provided, all planets except Uranus, Neptune, and Pluto will be included.
+    """
+    try:
+        # Use New Delhi coordinates if no input is provided
+        if horo_input is None:
+            horo_input = ChartInput(
+                year=2000,
+                month=1,
+                day=1,
+                hour=12,
+                minute=0,
+                second=0,
+                utc="+05:30",
+                latitude=28.6139,
+                longitude=77.2090,
+                ayanamsa="Krishnamurti",
+                house_system="Placidus"
+            )
+
+        # Validate input years
+        if start_year >= end_year:
+            return {"status": "error", "message": "start_year must be less than end_year"}
+
+        # Always exclude these planets
+        excluded_planets = ["Uranus", "Neptune", "Pluto"]
+
+        # If planets parameter is provided, use it for filtering
+        # Otherwise, include all valid planets by default
+        include_planets = None
+        if planets:
+            # Convert to set for faster lookups
+            include_planets = set(planets)
+
+        # Dictionary to track each planet's position over time
+        planet_transits = {}
+
+        # Create start and end dates
+        start_date = datetime(start_year, 1, 1)
+        end_date = datetime(end_year, 12, 31)
+
+        # Current state tracking for each planet
+        current_planet_states = {}  # {planet_name: (sign, start_date, is_retrograde)}
+
+        # Loop through each day in the range
+        current_date = start_date
+        while current_date <= end_date:
+            # Create a new VedicHoroscopeData object for each day
+            horoscope = VedicAstro.VedicHoroscopeData(
+                year=current_date.year,
+                month=current_date.month,
+                day=current_date.day,
+                hour=horo_input.hour,
+                minute=horo_input.minute,
+                second=horo_input.second,
+                latitude=horo_input.latitude,
+                longitude=horo_input.longitude,
+                tz=horo_input.utc,
+                ayanamsa=horo_input.ayanamsa,
+                house_system=horo_input.house_system
+            )
+
+            # Get transit details for this day
+            transit_data = horoscope.get_transit_details()
+
+            # Format date string (YYYY-MM-DD)
+            date_str = f"{current_date.year}-{current_date.month:02d}-{current_date.day:02d}"
+
+            # Process each planet's transit
+            for transit in transit_data:
+                planet_name = transit.PlanetName
+
+                # Skip excluded planets
+                if planet_name in excluded_planets:
+                    continue
+
+                # Skip planets not in the include list (if specified)
+                if include_planets is not None and planet_name not in include_planets:
+                    continue
+
+                sign = transit.PlanetSign
+                is_retrograde = transit.isRetrograde
+
+                # Initialize if this planet hasn't been seen before
+                if planet_name not in planet_transits:
+                    planet_transits[planet_name] = []
+
+                # Check if this is a new entry or the sign has changed
+                if planet_name not in current_planet_states:
+                    # First time seeing this planet
+                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
+                elif current_planet_states[planet_name][0] != sign or current_planet_states[planet_name][2] != is_retrograde:
+                    # Sign or retrograde status changed - record the previous state
+                    prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
+
+                    planet_transits[planet_name].append({
+                        "sign": prev_sign,
+                        "start_date": prev_start,
+                        "end_date": date_str,
+                        "isRetrograde": prev_retro
+                    })
+
+                    # Update current state with new sign
+                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
+
+            # Move to the next day
+            current_date += timedelta(days=1)
+
+        # Record final states for all planets
+        end_date_str = f"{end_date.year}-{end_date.month:02d}-{end_date.day:02d}"
+        for planet_name, (sign, start_date, is_retrograde) in current_planet_states.items():
+            planet_transits[planet_name].append({
+                "sign": sign,
+                "start_date": start_date,
+                "end_date": end_date_str,
+                "isRetrograde": is_retrograde
+            })
+
+        # Planet and sign abbreviations
+        planet_abbr = {
+            "Sun": "Su", "Moon": "Mo", "Mercury": "Me",
+            "Venus": "Ve", "Mars": "Ma", "Jupiter": "Ju",
+            "Saturn": "Sa", "Rahu": "Ra", "Ketu": "Ke"
+        }
+
+        sign_abbr = {
+            "Aries": "1", "Taurus": "2", "Gemini": "3", "Cancer": "4",
+            "Leo": "5", "Virgo": "6", "Libra": "7", "Scorpio": "8",
+            "Sagittarius": "9", "Capricorn": "10", "Aquarius": "11", "Pisces": "12"
+        }
+
+        # Generate ultra-compact markdown
+        markdown = "#Transits\n"
+
+        for planet, transits in planet_transits.items():
+            p_code = planet_abbr.get(planet, planet[:2])
+            markdown += f"{p_code}:"
+
+            transit_parts = []
+            for t in transits:
+                # Further optimize dates by using YY-MM-DD format
+                start = t["start_date"].replace("-", "")[2:]  # YYYYMMDD → YYMMDD
+                end = t["end_date"].replace("-", "")[2:]      # YYYYMMDD → YYMMDD
+
+                sign_code = sign_abbr.get(t["sign"], t["sign"][:2])
+                r_mark = "R" if t["isRetrograde"] else ""
+
+                transit_parts.append(f"{sign_code}{r_mark}:{start}/{end}")
+
+            markdown += ",".join(transit_parts) + "\n"
+
+        return Response(content=markdown, media_type="text/markdown")
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": str(e), "details": error_details}
 
 if __name__ == "__main__":
     import uvicorn
