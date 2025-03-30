@@ -854,34 +854,6 @@ async def get_horary_data(input: HoraryChartInput):
         "consolidated_chart_data": consolidated_chart_data
     }
 
-def format_consolidated_chart_data(data):
-    formatted_data = []
-
-    # First, create a mapping of signs to house numbers
-    sign_to_house = {}
-    for sign, objects in data.items():
-        for obj_name, obj_data in objects.items():
-            if obj_name in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]:
-                house_num = roman_to_int(obj_name)
-                sign_to_house[sign] = house_num
-
-    # Then create entries for all planets with their house numbers
-    for sign, objects in data.items():
-        for obj_name, obj_data in objects.items():
-            # Skip house cusps, process only planets and points
-            if obj_name not in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]:
-                obj_entry = {
-                    "Object": obj_name,
-                    "Rasi": sign,
-                    "isRetroGrade": obj_data.get("is_Retrograde", False),
-                    "LonDecDeg": obj_data.get("LonDecDeg"),
-                    "SignLonDMS": obj_data.get("SignLonDMS"),
-                    "SignLonDecDeg": obj_data.get("SignLonDecDeg"),
-                    "House Number": sign_to_house.get(sign)
-                }
-                formatted_data.append(obj_entry)
-
-    return formatted_data
 
 def roman_to_int(roman):
     """Convert Roman numeral to integer"""
@@ -1496,6 +1468,234 @@ async def generate_markdown_transit_data(
         import traceback
         error_details = traceback.format_exc()
         return {"status": "error", "message": str(e), "details": error_details}
+
+
+def format_consolidated_chart_data(data):
+    formatted_data = []
+
+    # First, create a mapping of signs to house numbers
+    sign_to_house = {}
+    sign_to_rashi_house = {}
+    for sign, objects in data.items():
+        for obj_name, obj_data in objects.items():
+            if obj_name in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]:
+                house_num = roman_to_int(obj_name)
+                sign_to_house[sign] = house_num
+                sign_to_rashi_house[sign] = zodiac_signs.index(sign) + 1
+    # Then create entries for all planets with their house numbers
+    for sign, objects in data.items():
+        for obj_name, obj_data in objects.items():
+            # Skip house cusps, process only planets and points
+            if obj_name not in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]:
+                obj_entry = {
+                    "Object": obj_name,
+                    "Rasi": sign,
+                    "Rashi House Number": sign_to_rashi_house.get(sign)
+                }
+                formatted_data.append(obj_entry)
+
+    return formatted_data
+
+
+@app.post("/get_ashtakavarga_data")
+async def generate_ashtakavarga_data(horo_input: ChartInput):
+    """
+    Generates the Ashtakavarga data for a birth chart.
+    """
+    try:
+        # Create a VedicHoroscopeData object
+        horoscope = VedicAstro.VedicHoroscopeData(
+            year=horo_input.year,
+            month=horo_input.month,
+            day=horo_input.day,
+            hour=horo_input.hour,
+            minute=horo_input.minute,
+            second=horo_input.second,
+            latitude=horo_input.latitude,
+            longitude=horo_input.longitude,
+            tz=horo_input.utc,
+            ayanamsa=horo_input.ayanamsa,
+            house_system=horo_input.house_system
+        )
+
+        # Generate chart
+        chart = horoscope.generate_chart()
+        planets_data = horoscope.get_planets_data_from_chart(chart)
+        houses_data = horoscope.get_houses_data_from_chart(chart)
+
+        # Get consolidated chart data
+        consolidated_chart_data = horoscope.get_consolidated_chart_data(
+            planets_data=planets_data,
+            houses_data=houses_data
+        )
+
+
+        # Calculate Ashtakavarga using the chart data
+        ashtakavarga_data = get_ashtakavarga_data(consolidated_chart_data)
+        return ashtakavarga_data
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        return {"status": "error", "message": str(e), "details": error_details}
+
+
+def get_ashtakavarga_data(chart_data):
+    """
+    Calculate Ashtakavarga tables using traditional Vedic astrology rules.
+    """
+    # Define the planets we'll work with (7 planets + Lagna)
+    planets = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Ascendant"]
+
+    # Get planetary positions from chart data
+    planet_positions = {}
+
+    # Extract planetary positions and ascendant from the chart data
+    for sign, objects in chart_data.items():
+        for obj_name, obj_data in objects.items():
+            if obj_name in ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn"]:
+                # Store each planet's sign position (1-12)
+                planet_positions[obj_name] = zodiac_signs.index(sign) + 1
+            elif obj_name == "Asc" or obj_name == "I":  # The ascendant
+                planet_positions["Ascendant"] = zodiac_signs.index(sign) + 1
+
+    # Define classical benefic houses from each planet's position
+    sun_benefic_houses = {
+        "Sun": [1, 2, 4, 7, 8, 9, 10, 11],
+        "Moon": [3, 6, 10, 11],
+        "Mars": [1,2,4,7,8,9,10,11],
+        "Mercury": [3, 5, 6, 9, 10, 11, 12],
+        "Jupiter": [5, 6, 9, 11],
+        "Venus": [6, 7, 12],
+        "Saturn": [1, 2, 4, 7, 8, 9, 10, 11],
+        "Ascendant": [3, 4, 6, 10, 11, 12]
+    }
+
+    moon_benefic_houses = {
+        "Sun": [3, 6, 7, 8, 10, 11],
+        "Moon": [1, 3, 6, 7, 10, 11],
+        "Mars": [ 2, 3, 5, 6, 9, 10, 11 ],
+        "Mercury": [1, 3, 4, 5, 7, 8, 10, 11],
+        "Jupiter": [ 1, 4, 7, 8, 10, 11, 12],
+        "Venus": [ 3, 4, 5, 7, 9, 10, 11],
+        "Saturn": [3, 5, 6, 11],
+        "Ascendant": [3, 6, 10, 11]
+    }
+
+    mercury_benefic_houses = {
+        "Sun": [5,6,9,11, 12],
+        "Moon": [2,4,6,8,10,11],
+        "Mars": [1,2,4,7,8,9,10,11],
+        "Mercury": [1,3,5,6,9,10,11,12],
+        "Jupiter": [6,8,11,12],
+        "Venus": [1,2,3,4,5,8,9,11],
+        "Saturn": [1,2,4,7,8,9,10,11],
+        "Ascendant": [1,2,4,6,8,10,11],
+    }
+
+    venus_benefic_houses = {
+        "Sun": [8,11,12],
+        "Moon": [1,2,3,4,5,8,9,11,12],
+        "Mars": [3,5,6,9,11,12],
+        "Mercury": [3,5,6,9,11],
+        "Jupiter": [5,8,9,10,11],
+        "Venus": [1,2,3,4,5,8,9,10,11],
+        "Saturn": [3,4,5,8,9,10,11],
+        "Ascendant": [1,2,3,4,5,8,9,11],
+    }
+
+    mars_benefic_houses = {
+        "Sun": [3,5,6,10,11],
+        "Moon": [3,6,11],
+        "Mars": [1,2,4,7,8,10,11],
+        "Mercury": [3,5,6,11],
+        "Jupiter": [6,10,11,12],
+        "Venus": [6,8,11,12],
+        "Saturn": [1,4,7,8,9,10,11],
+        "Ascendant": [1,3,6,10,11],
+    }
+
+    jupiter_benefic_houses = {
+        "Sun": [1,2,3,4,7,8,9,10,11],
+        "Moon": [2,5,7,9,11],
+        "Mars": [1,2,4,7,8,10,11],
+        "Mercury": [1,2,4,5,6,9,10,11],
+        "Jupiter": [1,2,3,4,7,8,10,11],
+        "Venus": [2,5,6,9,10,11],
+        "Saturn": [3,5,6,12],
+        "Ascendant": [1,2,4,5,6,7,9,10,11],
+    }
+
+    saturn_benefic_houses = {
+        "Sun": [1,2,4,7,8,10,11],
+        "Moon": [3,6,11],
+        "Mars": [3,5,6,10,11,12],
+        "Mercury": [6,8,9,10,11,12],
+        "Jupiter": [5,6,11,12],
+        "Venus": [6,11,12],
+        "Saturn": [3,5,6,11],
+        "Ascendant": [1,3,4,6,10,11],
+    }
+
+
+    # Initialize Bhinnashtakavarga tables
+    bhinnashtakavarga = {planet: [0] * 12 for planet in planets}
+
+    # Calculate bindus for each sign in each planet's Ashtakavarga
+    for sign_index in range(12):
+        sign_num = sign_index + 1  # Convert to 1-12 format
+
+        # For each contributing planet
+        for contributor in planets:
+            contributor_pos = planet_positions.get(contributor)
+            if contributor_pos is None:
+                continue
+
+            # Calculate relative position
+            relative_pos = ((sign_num - contributor_pos + 1) % 12)
+            if relative_pos == 0:
+                relative_pos = 12
+
+
+
+            # Check if this relative position gets a bindu
+            # Use the appropriate benefic houses dictionary based on which planet's table we're calculating
+            if relative_pos in sun_benefic_houses[contributor]:
+                bhinnashtakavarga["Sun"][sign_index] += 1
+            if relative_pos in moon_benefic_houses[contributor]:
+                bhinnashtakavarga["Moon"][sign_index] += 1
+            if relative_pos in mercury_benefic_houses[contributor]:
+                bhinnashtakavarga["Mercury"][sign_index] += 1
+            if relative_pos in venus_benefic_houses[contributor]:
+                bhinnashtakavarga["Venus"][sign_index] += 1
+            if relative_pos in mars_benefic_houses[contributor]:
+                bhinnashtakavarga["Mars"][sign_index] += 1
+            if relative_pos in jupiter_benefic_houses[contributor]:
+                bhinnashtakavarga["Jupiter"][sign_index] += 1
+            if relative_pos in saturn_benefic_houses[contributor]:
+                bhinnashtakavarga["Saturn"][sign_index] += 1
+
+    # Calculate Sarvashtakavarga
+    sarvashtakavarga = [0] * 12
+    for i in range(12):
+        for planet in planets:
+            sarvashtakavarga[i] += bhinnashtakavarga[planet][i]
+
+
+
+    # Also calculate the sarvashtakavarga in the same format
+    sarva_total = {zodiac_signs[i]: sarvashtakavarga[i] for i in range(12)}
+
+    bhinnashtakavarga_data = {planet: {zodiac_signs[i]: bhinnashtakavarga[planet][i] for i in range(12)}
+                             for planet in planets if planet != "Ascendant"}
+
+    return {
+
+        "sarvashtaka_varga": sarva_total,
+
+        "bhinnashtaka_varga": bhinnashtakavarga_data
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
