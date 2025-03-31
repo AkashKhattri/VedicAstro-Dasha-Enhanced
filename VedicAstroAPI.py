@@ -1544,7 +1544,7 @@ def get_ashtakavarga_data(chart_data):
     """
     Calculate Ashtakavarga tables using traditional Vedic astrology rules.
     """
-    # Define the planets we'll work with (7 planets + Lagna)
+    # Define the planets (7 planets + Lagna)
     planets = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Ascendant"]
 
     # Get planetary positions from chart data
