@@ -192,7 +192,7 @@ def compute_vimshottari_dasa_enahanced(year, month, day, hour, minute, second, l
     # with open(output_filename, 'w', encoding='utf-8') as f:
     #     json.dump(data_to_save, f, indent=2, ensure_ascii=False)
 
-    return str(vimshottari_dasa)
+    return vimshottari_dasa
 
 
 

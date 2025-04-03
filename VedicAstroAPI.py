@@ -98,7 +98,30 @@ async def get_chart_data(horo_input: ChartInput):
         horo_input.house_system
     )
 
+    return str(vimshottari_dasa)
+
+@app.post("/get_dasha_data")
+async def get_chart_data(horo_input: ChartInput):
+    """
+    Generates all data for a given time and location, based on the selected ayanamsa & house system
+    """
+
+    vimshottari_dasa = compute_vimshottari_dasa_enahanced(
+        horo_input.year,
+        horo_input.month,
+        horo_input.day,
+        horo_input.hour,
+        horo_input.minute,
+        horo_input.second,
+        horo_input.latitude,
+        horo_input.longitude,
+        horo_input.utc,
+        horo_input.ayanamsa,
+        horo_input.house_system
+    )
+
     return vimshottari_dasa
+
 
 @app.post("/get_chart_data")
 async def get_chart_data(horo_input: ChartInput):
@@ -1273,7 +1296,7 @@ async def generate_compact_transit_data(
 
 @app.post("/generate_transit_data")
 async def generate_transit_data(
-    transit_data_request: TransitDataRequest
+    transit_data_request: TransitDataRequest,
 ):
     try:
         start_year = transit_data_request.start_year
@@ -1399,7 +1422,7 @@ async def generate_transit_data(
         #     planet_transits["Moon"] = "|".join(moon_data)
 
 
-        return str(planet_transits).replace(" ", '')
+        return planet_transits
 
 
     except Exception as e:
