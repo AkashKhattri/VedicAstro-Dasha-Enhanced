@@ -44,7 +44,7 @@ class ChartInput(BaseModel):
     utc: str = None
     latitude: float
     longitude: float
-    ayanamsa: str = "Krishnamurti"
+    ayanamsa: str = "Lahiri"
     house_system: str = "Placidus"
     return_style: Optional[str] = None
 
@@ -1650,7 +1650,8 @@ def format_consolidated_chart_data(data):
                 obj_entry = {
                     "Object": obj_name,
                     "Rasi": sign,
-                    "Rashi House Number": sign_to_rashi_house.get(sign)
+                    "Rashi House Number": sign_to_rashi_house.get(sign),
+                    "isRetrograde": obj_data.get("is_Retrograde", False)
                 }
                 formatted_data.append(obj_entry)
 
