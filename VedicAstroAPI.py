@@ -44,7 +44,7 @@ class ChartInput(BaseModel):
     utc: str = None
     latitude: float
     longitude: float
-    ayanamsa: str = "Lahiri"
+    ayanamsa: str = "Krishnamurti"
     house_system: str = "Placidus"
     return_style: Optional[str] = None
 
@@ -140,8 +140,49 @@ async def get_chart_data(horo_input: ChartInput):
                                                                     houses_data=houses_data,
                                                                     return_style = horo_input.return_style)
 
-    return format_consolidated_chart_data(consolidated_chart_data)
-    # Convert NamedTuple to list of dictionaries with named fields
+    return consolidated_chart_data
+    # # Convert NamedTuple to list of dictionaries with named fields
+    # formatted_data = []
+    # for planet in planets_data:
+    #     planet_dict = {
+    #         "Object": planet.Object,
+    #         "Rasi": planet.Rasi,
+    #         "isRetroGrade": planet.isRetroGrade,
+    #         "LonDecDeg": planet.LonDecDeg,
+    #         "SignLonDMS": planet.SignLonDMS,
+    #         "SignLonDecDeg": planet.SignLonDecDeg,
+    #         "LatDMS": planet.LatDMS,
+    #         "Nakshatra": planet.Nakshatra,
+    #         "Rasi Lord": planet.RasiLord,
+    #         "Nakshatra Lord": planet.NakshatraLord,
+    #         "Sub Lord": planet.SubLord,
+    #         "Sub Sub Lord": planet.SubSubLord,
+    #         "Cusp Number": planet.HouseNr
+    #     }
+    #     formatted_data.append(planet_dict)
+
+    # return (formatted_data)
+
+
+@app.post("/get_kp_data")
+async def get_kp_data(horo_input: ChartInput):
+    """
+    Generates all data for a given time and location as per KP Astrology system
+    Returns data as a list of dictionaries with named fields for each planet/point
+    """
+    horoscope = VedicAstro.VedicHoroscopeData(year=horo_input.year, month=horo_input.month, day=horo_input.day,
+                                           hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+                                           tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+                                           ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system)
+    chart = horoscope.generate_chart()
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+    houses_data = horoscope.get_houses_data_from_chart(chart)
+    consolidated_chart_data = horoscope.get_consolidated_chart_data(planets_data=planets_data,
+                                                                    houses_data=houses_data,
+                                                                    return_style = horo_input.return_style)
+
+    # return consolidated_chart_data
+    # # Convert NamedTuple to list of dictionaries with named fields
     formatted_data = []
     for planet in planets_data:
         planet_dict = {
@@ -157,11 +198,12 @@ async def get_chart_data(horo_input: ChartInput):
             "Nakshatra Lord": planet.NakshatraLord,
             "Sub Lord": planet.SubLord,
             "Sub Sub Lord": planet.SubSubLord,
-            "House Number": planet.HouseNr
+            "Cusp Number": planet.HouseNr
         }
         formatted_data.append(planet_dict)
 
-    return (formatted_data)
+    return formatted_data
+
 
 @app.post("/get_d2_chart_data")
 async def get_chart_data(horo_input: ChartInput, method: str = "yavana"):
@@ -1166,7 +1208,7 @@ async def generate_compact_transit_data(
         end_year = transit_data_request.end_year
         planets = transit_data_request.planets
         horo_input = transit_data_request.horo_input
-
+        print(planets)
         # Validate input years
         if start_year >= end_year:
             return {"status": "error", "message": "start_year must be less than end_year"}

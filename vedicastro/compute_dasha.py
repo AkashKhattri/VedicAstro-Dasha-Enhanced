@@ -130,7 +130,7 @@ def compute_vimshottari_dasa(chart: Chart, birth_year, birth_month, birth_day, b
         d['planet']: {
             'start': dt_tuple_str(d['start']),
             'end': dt_tuple_str(d['end']),
-            'bhuktis': d['bhuktis']
+            'antardashas': d['bhuktis']
         }
         for d in dasha_periods
     }
@@ -183,7 +183,7 @@ def compute_vimshottari_dasa_enahanced(year, month, day, hour, minute, second, l
 
     # Validate the data structure
     for maha_dasha, maha_data in vimshottari_dasa.items():
-        for bhukti, bhukti_data in maha_data['bhuktis'].items():
+        for bhukti, bhukti_data in maha_data['antardashas'].items():
             if 'pratyantars' not in bhukti_data:
                 # print(f"Warning: Pratyantars missing for {maha_dasha}-{bhukti}")
                 bhukti_data['pratyantars'] = {}  # Add empty dict if missing
