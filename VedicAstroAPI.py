@@ -140,7 +140,7 @@ async def get_chart_data(horo_input: ChartInput):
                                                                     houses_data=houses_data,
                                                                     return_style = horo_input.return_style)
 
-    return consolidated_chart_data
+    return format_consolidated_chart_data(consolidated_chart_data)
     # # Convert NamedTuple to list of dictionaries with named fields
     # formatted_data = []
     # for planet in planets_data:
