@@ -98,7 +98,7 @@ async def get_chart_data(horo_input: ChartInput):
         horo_input.house_system
     )
 
-    return str(vimshottari_dasa)
+    return vimshottari_dasa
 
 @app.post("/get_dasha_data")
 async def get_chart_data(horo_input: ChartInput):
@@ -167,23 +167,37 @@ async def get_chart_data(horo_input: ChartInput):
 @app.post("/get_kp_data")
 async def get_kp_data(horo_input: ChartInput):
     """
-    Generates all data for a given time and location as per KP Astrology system
-    Returns data as a list of dictionaries with named fields for each planet/point
+    Generates KP Astrology data for a given time and location including house cusps.
+    Returns both planets and cusps with their detailed positions and lord information.
     """
-    horoscope = VedicAstro.VedicHoroscopeData(year=horo_input.year, month=horo_input.month, day=horo_input.day,
-                                           hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
-                                           tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
-                                           ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system)
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year,
+        month=horo_input.month,
+        day=horo_input.day,
+        hour=horo_input.hour,
+        minute=horo_input.minute,
+        second=horo_input.second,
+        tz=horo_input.utc,
+        latitude=horo_input.latitude,
+        longitude=horo_input.longitude,
+        ayanamsa=horo_input.ayanamsa,
+        house_system=horo_input.house_system
+    )
+
+    # Generate the chart
     chart = horoscope.generate_chart()
+
+    # Get planets and houses data
     planets_data = horoscope.get_planets_data_from_chart(chart)
     houses_data = horoscope.get_houses_data_from_chart(chart)
-    consolidated_chart_data = horoscope.get_consolidated_chart_data(planets_data=planets_data,
-                                                                    houses_data=houses_data,
-                                                                    return_style = horo_input.return_style)
 
-    # return consolidated_chart_data
-    # # Convert NamedTuple to list of dictionaries with named fields
-    formatted_data = []
+    # Format both planets and houses data with detailed information
+    formatted_data = {
+        "planets": [],
+        "cusps": []
+    }
+
+    # Process planet data
     for planet in planets_data:
         planet_dict = {
             "Object": planet.Object,
@@ -194,13 +208,126 @@ async def get_kp_data(horo_input: ChartInput):
             "SignLonDecDeg": planet.SignLonDecDeg,
             "LatDMS": planet.LatDMS,
             "Nakshatra": planet.Nakshatra,
-            "Rasi Lord": planet.RasiLord,
-            "Nakshatra Lord": planet.NakshatraLord,
-            "Sub Lord": planet.SubLord,
-            "Sub Sub Lord": planet.SubSubLord,
-            "House Number": planet.HouseNr
+            "RasiLord": planet.RasiLord,
+            "NakshatraLord": planet.NakshatraLord,
+            "SubLord": planet.SubLord,
+            "SubSubLord": planet.SubSubLord,
+            "HouseNr": planet.HouseNr
         }
-        formatted_data.append(planet_dict)
+        formatted_data["planets"].append(planet_dict)
+
+    # Process house cusp data
+    for house in houses_data:
+        house_dict = {
+            "Object": house.Object,  # Roman numeral house number
+            "HouseNr": house.HouseNr,  # Numeric house number
+            "Rasi": house.Rasi,
+            "LonDecDeg": house.LonDecDeg,
+            "SignLonDMS": house.SignLonDMS,
+            "SignLonDecDeg": house.SignLonDecDeg,
+            "DegSize": house.DegSize,  # Size of the house in degrees
+            "Nakshatra": house.Nakshatra,
+            "RasiLord": house.RasiLord,
+            "NakshatraLord": house.NakshatraLord,
+            "SubLord": house.SubLord,
+            "SubSubLord": house.SubSubLord
+        }
+        formatted_data["cusps"].append(house_dict)
+
+    # Calculate planetary aspects for KP analysis
+    aspects = horoscope.get_planetary_aspects(chart)
+    formatted_data["aspects"] = aspects
+
+    # Add consolidated chart data by sign (rasi)
+    consolidated_chart_data = horoscope.get_consolidated_chart_data(
+        planets_data=planets_data,
+        houses_data=houses_data,
+        return_style="dataframe_records"
+    )
+
+    # Reformat the consolidated chart data to be more readable
+    reformatted_chart_data = []
+    for sign_data in consolidated_chart_data:
+        # Create a better structured entry for each sign
+        formatted_sign = {
+            "Rasi": sign_data["Rasi"],
+            "Houses": [],
+            "Planets": []
+        }
+
+        # Separate houses (Roman numerals) from planets
+        for i, obj in enumerate(sign_data["Object"]):
+            is_retrograde = sign_data["isRetroGrade"][i] if i < len(sign_data["isRetroGrade"]) else False
+            longitude = sign_data["SignLonDecDeg"][i] if i < len(sign_data["SignLonDecDeg"]) else 0
+
+            if obj in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "Asc"]:
+                formatted_sign["Houses"].append({
+                    "Name": obj,
+                    "Longitude": longitude,
+                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else ""
+                })
+            else:
+                formatted_sign["Planets"].append({
+                    "Name": obj,
+                    "Longitude": longitude,
+                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else "",
+                    "isRetrograde": is_retrograde
+                })
+
+        reformatted_chart_data.append(formatted_sign)
+
+    formatted_data["rasi_chart"] = reformatted_chart_data
+
+    # Generate significators for KP analysis with more descriptive names
+    planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
+    house_significators = horoscope.get_house_wise_significators(planets_data, houses_data)
+
+    # Convert planet significators with descriptive names
+    formatted_planet_significators = []
+    for sig in planet_significators:
+        # Collect all houses signified by this planet (without duplicates)
+        all_houses = set()
+
+        # Add star lord house
+        if sig.A:  # House occupied by this planet's star lord
+            all_houses.add(sig.A)
+
+        # Add occupied house
+        if sig.B:  # House occupied by the planet itself
+            all_houses.add(sig.B)
+
+        # Add houses ruled by star lord
+        if sig.C:  # Houses where the star lord is also the rashi lord
+            for house in sig.C:
+                all_houses.add(house)
+
+        # Add houses ruled by planet
+        if sig.D:  # Houses where this planet is the rashi lord
+            for house in sig.D:
+                all_houses.add(house)
+
+        # Sort the houses for consistent ordering
+        sorted_houses = sorted(list(all_houses))
+
+        formatted_sig = {
+            "Planet": sig.Planet,
+            "houseSignified": sorted_houses
+        }
+        formatted_planet_significators.append(formatted_sig)
+
+    # Convert house significators with descriptive names
+    formatted_house_significators = []
+    for sig in house_significators:
+        formatted_sig = {
+            "House": sig.House,
+            "PlanetsInStarOfOccupants": sig.A,  # Planets in the star of occupants of this house
+            "OccupyingPlanets": sig.B,  # Planets occupying this house
+            "PlanetsInStarOfOwner": sig.C,  # Planets in the star of owner of this house
+            "HouseOwner": sig.D   # Owner/lord of this house
+        }
+        formatted_house_significators.append(formatted_sig)
+
+    formatted_data["planet_significators"] = formatted_planet_significators
 
     return formatted_data
 
@@ -285,7 +412,39 @@ async def get_kp_chart_with_cusps(horo_input: ChartInput):
         houses_data=houses_data,
         return_style="dataframe_records"
     )
-    formatted_data["rasi_chart"] = consolidated_chart_data
+
+    # Reformat the consolidated chart data to be more readable
+    reformatted_chart_data = []
+    for sign_data in consolidated_chart_data:
+        # Create a better structured entry for each sign
+        formatted_sign = {
+            "Rasi": sign_data["Rasi"],
+            "Houses": [],
+            "Planets": []
+        }
+
+        # Separate houses (Roman numerals) from planets
+        for i, obj in enumerate(sign_data["Object"]):
+            is_retrograde = sign_data["isRetroGrade"][i] if i < len(sign_data["isRetroGrade"]) else False
+            longitude = sign_data["SignLonDecDeg"][i] if i < len(sign_data["SignLonDecDeg"]) else 0
+
+            if obj in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "Asc"]:
+                formatted_sign["Houses"].append({
+                    "Name": obj,
+                    "Longitude": longitude,
+                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else ""
+                })
+            else:
+                formatted_sign["Planets"].append({
+                    "Name": obj,
+                    "Longitude": longitude,
+                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else "",
+                    "isRetrograde": is_retrograde
+                })
+
+        reformatted_chart_data.append(formatted_sign)
+
+    formatted_data["rasi_chart"] = reformatted_chart_data
 
     # Generate significators for KP analysis with more descriptive names
     planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
@@ -294,12 +453,33 @@ async def get_kp_chart_with_cusps(horo_input: ChartInput):
     # Convert planet significators with descriptive names
     formatted_planet_significators = []
     for sig in planet_significators:
+        # Collect all houses signified by this planet (without duplicates)
+        all_houses = set()
+
+        # Add star lord house
+        if sig.A:  # House occupied by this planet's star lord
+            all_houses.add(sig.A)
+
+        # Add occupied house
+        if sig.B:  # House occupied by the planet itself
+            all_houses.add(sig.B)
+
+        # Add houses ruled by star lord
+        if sig.C:  # Houses where the star lord is also the rashi lord
+            for house in sig.C:
+                all_houses.add(house)
+
+        # Add houses ruled by planet
+        if sig.D:  # Houses where this planet is the rashi lord
+            for house in sig.D:
+                all_houses.add(house)
+
+        # Sort the houses for consistent ordering
+        sorted_houses = sorted(list(all_houses))
+
         formatted_sig = {
             "Planet": sig.Planet,
-            "StarLordHouse": sig.A,  # House occupied by this planet's star lord
-            "OccupiedHouse": sig.B,  # House occupied by the planet itself
-            "StarLordRuledHouses": sig.C,  # Houses where the star lord is also the rashi lord
-            "PlanetRuledHouses": sig.D   # Houses where this planet is the rashi lord
+            "houseSignified": sorted_houses
         }
         formatted_planet_significators.append(formatted_sig)
 
