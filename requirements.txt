@@ -7,4 +7,8 @@ prettytable
 ipykernel
 pyswisseph
 timezonefinder
+pytz
+cartopy
+numpy
+matplotlib
 git+https://github.com/diliprk/flatlib.git@sidereal

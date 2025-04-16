@@ -5,8 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from concurrent.futures import ThreadPoolExecutor
 from vedicastro import VedicAstro, horary_chart
-from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced
 from vedicastro.utils import pretty_data_table
+from vedicastro.astrocartography import AstrocartographyCalculator
+from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced
 from d_chart_calculation import (calculate_d2_position,
                                  calculate_d3_position,
                                  calculate_d4_position,
@@ -25,6 +26,7 @@ import os
 import csv
 from datetime import datetime, timedelta
 import io
+from flatlib import const
 
 app = FastAPI()
 
@@ -2153,8 +2155,6 @@ def get_ashtakavarga_data(chart_data):
             if relative_pos == 0:
                 relative_pos = 12
 
-
-
             # Check if this relative position gets a bindu
             # Use the appropriate benefic houses dictionary based on which planet's table we're calculating
             if relative_pos in sun_benefic_houses[contributor]:
@@ -2192,6 +2192,132 @@ def get_ashtakavarga_data(chart_data):
 
         "bhinnashtaka_varga": bhinnashtakavarga_data
     }
+
+@app.post("/get_astrocartography_data")
+async def get_astrocartography_data(horo_input: ChartInput, planets: List[str] = None):
+    """
+    Generate astrocartography data for a birth chart.
+    Returns planetary lines data suitable for rendering on a world map.
+
+    Parameters:
+    ----------
+    horo_input: ChartInput
+        The chart input data (birth details)
+    planets: List[str], optional
+        List of planets to include in the analysis. If None, all major planets are included.
+
+    Returns:
+    -------
+    JSON response containing astrocartography data:
+        - status: Success or error status
+        - birthLocation: The birth location coordinates
+        - lines: Array of planetary line data for mapping
+    """
+    try:
+
+
+        # Create a VedicHoroscopeData object from the input
+        horoscope = VedicAstro.VedicHoroscopeData(
+            year=horo_input.year,
+            month=horo_input.month,
+            day=horo_input.day,
+            hour=horo_input.hour,
+            minute=horo_input.minute,
+            second=horo_input.second,
+            latitude=horo_input.latitude,
+            longitude=horo_input.longitude,
+            tz=horo_input.utc,
+            ayanamsa=horo_input.ayanamsa,
+            house_system=horo_input.house_system
+        )
+
+        # Create an AstrocartographyCalculator instance
+        try:
+            astrocartography = AstrocartographyCalculator(horoscope)
+            print("Successfully created AstrocartographyCalculator")
+        except Exception as e:
+            print(f"Error creating AstrocartographyCalculator: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return {"status": "error", "message": f"Error initializing astrocartography: {str(e)}"}
+
+        # Process the planets list if provided
+        planet_list = None
+        if planets:
+            print(f"Processing planets list: {planets}")
+            # Convert common name formats to flatlib planet constants
+            planet_mapping = {
+                "sun": const.SUN,
+                "moon": const.MOON,
+                "mercury": const.MERCURY,
+                "venus": const.VENUS,
+                "mars": const.MARS,
+                "jupiter": const.JUPITER,
+                "saturn": const.SATURN,
+                "uranus": const.URANUS,
+                "neptune": const.NEPTUNE,
+                "pluto": const.PLUTO,
+                "rahu": const.NORTH_NODE,
+                "ketu": const.SOUTH_NODE,
+                "north node": const.NORTH_NODE,
+                "south node": const.SOUTH_NODE,
+                # Add capitalized versions too
+                "Sun": const.SUN,
+                "Moon": const.MOON,
+                "Mercury": const.MERCURY,
+                "Venus": const.VENUS,
+                "Mars": const.MARS,
+                "Jupiter": const.JUPITER,
+                "Saturn": const.SATURN,
+                "Uranus": const.URANUS,
+                "Neptune": const.NEPTUNE,
+                "Pluto": const.PLUTO,
+                "Rahu": const.NORTH_NODE,
+                "Ketu": const.SOUTH_NODE,
+                "North Node": const.NORTH_NODE,
+                "South Node": const.SOUTH_NODE
+            }
+
+            try:
+                planet_list = []
+                for p in planets:
+                    if isinstance(p, str):
+                        # First try direct mapping
+                        if p in planet_mapping:
+                            planet_list.append(planet_mapping[p])
+                        else:
+                            # Try case-insensitive match if direct mapping fails
+                            p_lower = p.lower()
+                            if p_lower in planet_mapping:
+                                planet_list.append(planet_mapping[p_lower])
+                            else:
+                                print(f"Warning: Unknown planet '{p}', skipping")
+
+                if not planet_list:
+                    print("No valid planets found, using default planets")
+                    planet_list = None
+                else:
+                    print(f"Mapped planets: {planet_list}")
+            except Exception as e:
+                print(f"Error mapping planets: {str(e)}")
+                planet_list = None
+
+        # Get the astrocartography data
+        try:
+            astro_data = astrocartography.get_astrocartography_data(planet_list)
+            print("Successfully calculated astrocartography data")
+            return astro_data
+        except Exception as e:
+            print(f"Error calculating astrocartography data: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return {"status": "error", "message": f"Error calculating astrocartography data: {str(e)}"}
+
+    except Exception as e:
+        print(f"Unexpected error in get_astrocartography_data: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
