@@ -194,5 +194,90 @@ def compute_vimshottari_dasa_enahanced(year, month, day, hour, minute, second, l
 
     return vimshottari_dasa
 
+def filter_vimshottari_dasa_by_years(vimshottari_dasa, start_year, end_year):
+    """
+    Filters the Vimshottari Dasa data to include only mahadashas that fall within
+    or overlap with the specified start and end years.
+
+    Args:
+        vimshottari_dasa: The complete vimshottari dasa data
+        start_year: The starting year to filter from
+        end_year: The ending year to filter to
+
+    Returns:
+        Filtered vimshottari dasa dictionary
+    """
+    filtered_dasa = {}
+
+    for planet, dasa_data in vimshottari_dasa.items():
+        # Convert date strings to datetime objects
+        start_date = datetime.strptime(dasa_data['start'], "%d-%m-%Y")
+        end_date = datetime.strptime(dasa_data['end'], "%d-%m-%Y")
+
+        # Check if this mahadasha overlaps with the specified year range
+        if (start_date.year <= end_year and end_date.year >= start_year):
+            filtered_dasa[planet] = dasa_data
+
+    return filtered_dasa
+
+def flatten_vimshottari_dasa(vimshottari_dasa):
+    """
+    Flattens the nested vimshottari dasa structure into a list of dictionaries
+    with mahadasha, antardasha, pratyantardasha, start_date, and end_date.
+
+    Args:
+        vimshottari_dasa: The vimshottari dasa data (nested dictionary)
+
+    Returns:
+        A list of dictionaries with flattened structure
+    """
+    flattened_data = []
+
+    for mahadasha, maha_data in vimshottari_dasa.items():
+        maha_start = datetime.strptime(maha_data['start'], "%d-%m-%Y")
+        maha_end = datetime.strptime(maha_data['end'], "%d-%m-%Y")
+
+        # Add mahadasha level entry
+        flattened_data.append({
+            'mahadasha': mahadasha,
+            'antardasha': None,
+            'pratyantardasha': None,
+            'start_date': maha_start,
+            'end_date': maha_end
+        })
+
+        # Process antardashas (bhuktis)
+        for antardasha, antar_data in maha_data['antardashas'].items():
+            antar_start = datetime.strptime(antar_data['start'], "%d-%m-%Y")
+            antar_end = datetime.strptime(antar_data['end'], "%d-%m-%Y")
+
+            # Add antardasha level entry
+            flattened_data.append({
+                'mahadasha': mahadasha,
+                'antardasha': antardasha,
+                'pratyantardasha': None,
+                'start_date': antar_start,
+                'end_date': antar_end
+            })
+
+            # Process pratyantardashas
+            for pratyantardasha, pratyantar_data in antar_data['pratyantars'].items():
+                pratyantar_start = datetime.strptime(pratyantar_data['start'], "%d-%m-%Y")
+                pratyantar_end = datetime.strptime(pratyantar_data['end'], "%d-%m-%Y")
+
+                # Add pratyantardasha level entry
+                flattened_data.append({
+                    'mahadasha': mahadasha,
+                    'antardasha': antardasha,
+                    'pratyantardasha': pratyantardasha,
+                    'start_date': pratyantar_start,
+                    'end_date': pratyantar_end
+                })
+
+    # Sort by start_date
+    flattened_data.sort(key=lambda x: x['start_date'])
+
+    return flattened_data
+
 
 

@@ -133,6 +133,65 @@ class VedicHoroscopeData:
 
         return aspects_dict
 
+    def get_planet_aspects_on_signs(self, chart: Chart):
+        """
+        Calculates which signs each planet aspects based on Vedic astrology rules (Drishti).
+        Returns a dictionary mapping each planet to a list of sign numbers (1-12) it aspects.
+
+        Aspect rules:
+        - All planets aspect the 7th sign from their position
+        - Jupiter additionally aspects the 5th and 9th signs
+        - Mars additionally aspects the 4th and 8th signs
+        - Saturn additionally aspects the 3rd and 10th signs
+        - Rahu and Ketu aspect the 5th, 7th, and 9th signs (like Jupiter)
+        """
+        # Define the planets list
+        planets = [const.SUN, const.MOON, const.MARS, const.MERCURY, const.JUPITER, const.VENUS,
+                   const.SATURN, const.URANUS, const.NEPTUNE, const.PLUTO, const.NORTH_NODE, const.SOUTH_NODE]
+
+        # Define the aspect rules for each planet according to Vedic astrology (Drishti)
+        aspect_rules = {
+            const.SUN: [7],             # Sun aspects 7th sign
+            const.MOON: [7],            # Moon aspects 7th sign
+            const.MERCURY: [7],         # Mercury aspects 7th sign
+            const.VENUS: [7],           # Venus aspects 7th sign
+            const.PLUTO: [7],           # Pluto aspects 7th sign (not traditional)
+            const.URANUS: [7],          # Uranus aspects 7th sign (not traditional)
+            const.NEPTUNE: [7],         # Neptune aspects 7th sign (not traditional)
+            const.MARS: [4, 7, 8],      # Mars aspects 4th, 7th, and 8th signs
+            const.JUPITER: [5, 7, 9],   # Jupiter aspects 5th, 7th, and 9th signs
+            const.SATURN: [3, 7, 10],   # Saturn aspects 3rd, 7th, and 10th signs
+            const.NORTH_NODE: [5, 7, 9], # Rahu aspects 5th, 7th, and 9th signs like Jupiter
+            const.SOUTH_NODE: [5, 7, 9]  # Ketu aspects 5th, 7th, and 9th signs like Jupiter
+        }
+
+        # Initialize the result dictionary
+        planet_aspects = {}
+
+        for planet in planets:
+            # Get the planet object
+            obj = chart.get(planet)
+
+            # Get the sign number (1-12) where the planet is located
+            planet_sign = ((int(obj.lon) // 30) + 1)
+
+            # Replace North and South nodes with conventional names
+            planet_name = planet.replace("North Node", "Rahu").replace("South Node", "Ketu")
+
+            # Initialize the list of signs this planet aspects
+            aspected_signs = []
+
+            # Add signs based on the planet's aspect rules
+            for aspect in aspect_rules.get(planet, [7]):  # Default to just 7th aspect
+                # Calculate the aspected sign (1-12)
+                aspected_sign = ((planet_sign + aspect - 1) % 12) + 1
+                aspected_signs.append(aspected_sign)
+
+            # Store the planet's aspected signs in the result dictionary
+            planet_aspects[planet_name] = sorted(aspected_signs)
+
+        return planet_aspects
+
     def get_planetary_aspects_15(self, chart: Chart):
         """
         Computes exact planetary aspects based on multiples of 15 degrees without using flatlib's aspect functions.

@@ -1,13 +1,13 @@
-from typing import Optional, List
-from pydantic import BaseModel
-from fastapi import FastAPI, Response
+from typing import Optional, List, Dict, Any, Union
+from pydantic import BaseModel, field_validator, validator
+from fastapi import FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from concurrent.futures import ThreadPoolExecutor
 from vedicastro import VedicAstro, horary_chart
 from vedicastro.utils import pretty_data_table
 from vedicastro.astrocartography import AstrocartographyCalculator
-from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced
+from vedicastro.compute_dasha import compute_vimshottari_dasa_enahanced, filter_vimshottari_dasa_by_years, flatten_vimshottari_dasa
 from d_chart_calculation import (calculate_d2_position,
                                  calculate_d3_position,
                                  calculate_d4_position,
@@ -27,6 +27,16 @@ import csv
 from datetime import datetime, timedelta
 import io
 from flatlib import const
+from flatlib import aspects
+import concurrent.futures
+from vedicastro.yogas import check_raj_yogas, check_dhana_yogas, check_pancha_mahapurusha_yogas, check_nabhasa_yogas, check_other_yogas
+from vedicastro.extended_yogas import check_additional_benefic_yogas, check_malefic_yogas, check_intellectual_yogas
+import json
+import pandas as pd
+import numpy as np
+from flatlib.datetime import Datetime
+from flatlib.geopos import GeoPos
+from flatlib.chart import Chart
 
 app = FastAPI()
 
@@ -101,6 +111,111 @@ async def get_chart_data(horo_input: ChartInput):
     )
 
     return vimshottari_dasa
+
+class VimshottariDasaDataRequest(BaseModel):
+    horo_input:ChartInput
+    start_year:int
+    end_year:int
+    birth_date:str
+
+
+@app.post("/get_vimshottari_dasa_data")
+async def get_vimshottari_dasa_data(vimshottari_dasa_data_request: VimshottariDasaDataRequest):
+    """
+    Generates vimshottari dasa data for a given time and location, filtered by the specified start and end years.
+    Returns a flattened list of dashas with only entries where mahadasha, antardasha, and pratyantardasha are all present.
+    Includes age_at_start for each dasha period.
+    """
+    # Get complete vimshottari dasa data
+    vimshottari_dasa = compute_vimshottari_dasa_enahanced(
+        vimshottari_dasa_data_request.horo_input.year,
+        vimshottari_dasa_data_request.horo_input.month,
+        vimshottari_dasa_data_request.horo_input.day,
+        vimshottari_dasa_data_request.horo_input.hour,
+        vimshottari_dasa_data_request.horo_input.minute,
+        vimshottari_dasa_data_request.horo_input.second,
+        vimshottari_dasa_data_request.horo_input.latitude,
+        vimshottari_dasa_data_request.horo_input.longitude,
+        vimshottari_dasa_data_request.horo_input.utc,
+        vimshottari_dasa_data_request.horo_input.ayanamsa,
+        vimshottari_dasa_data_request.horo_input.house_system
+    )
+
+    # Filter the dasa data by start and end years
+    filtered_dasa = filter_vimshottari_dasa_by_years(
+        vimshottari_dasa,
+        vimshottari_dasa_data_request.start_year,
+        vimshottari_dasa_data_request.end_year
+    )
+
+    # Flatten the dasa data structure
+    flattened_dasa = flatten_vimshottari_dasa(filtered_dasa)
+
+    # Filter to include only entries with all three levels present
+    complete_entries = [dasa for dasa in flattened_dasa if dasa['mahadasha'] and dasa['antardasha'] and dasa['pratyantardasha']]
+
+    # Parse birth date
+    birth_date = datetime.strptime(vimshottari_dasa_data_request.birth_date, "%Y-%m-%d")
+
+    # Calculate age at start for each period and convert dates to ISO format
+    for dasa in complete_entries:
+        # Calculate age at start (in years with decimal precision)
+        days_diff = (dasa['start_date'] - birth_date).days
+        dasa['age_at_start'] = round(days_diff / 365.25, 2)
+
+        # Convert datetime objects to ISO strings
+        dasa['start_date'] = dasa['start_date'].strftime('%Y-%m-%d')
+        dasa['end_date'] = dasa['end_date'].strftime('%Y-%m-%d')
+
+    # Filter out dashas where age was smaller than 20
+    filtered_entries = [dasa for dasa in complete_entries if dasa['age_at_start'] >= 20 and dasa['age_at_start'] <=35]
+    print(dasa for entry in filtered_entries if entry['mahadasha'] == "Sun" and entry["pratyantardasha"] == "Mercury" and entry["antardasha"]== "Venus")
+
+    return {
+        "dashas": filtered_entries
+    }
+
+
+
+@app.post("/get_marriage_prediction")
+async def get_marriage_prediction(horo_input: ChartInput):
+    """
+    Generates marriage prediction for a given time and location
+    """
+    horoscope = VedicAstro.VedicHoroscopeData(year=horo_input.year, month=horo_input.month, day=horo_input.day,
+                                           hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
+                                           tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
+                                           ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system)
+    planets_significators_list = await get_kp_data(horo_input)
+    planets_significators_list = planets_significators_list["planet_significators"]
+
+    # Marriage Signifying Houses 2,7,11
+    planet_signifying_marriage_houses = [planet for planet in planets_significators_list if any(house in [2, 7, 11] for house in planet["houseSignified"])]
+
+    # Score marriage plantes based on the planets in the marriage houses
+    house_score_points = {
+        "2": 1,
+        "7": 1,
+        "11": 1,
+    }
+
+    planet_score_points = {}
+
+    for planet in planet_signifying_marriage_houses:
+        # Calculate score using house_score_points values
+        score = 0
+        for house in planet["houseSignified"]:
+            if house in [2, 7, 11]:
+                score += house_score_points[str(house)]
+        planet_score_points[planet["Planet"]] = score
+
+    # Sort the planets by score in descending order
+    sorted_planets = sorted(planet_score_points.items(), key=lambda x: x[1], reverse=True)
+
+    return {
+        "planet_score_points": sorted_planets,
+        "planet_signifying_marriage_houses": planet_signifying_marriage_houses
+    }
 
 @app.post("/get_dasha_data")
 async def get_chart_data(horo_input: ChartInput):
@@ -240,6 +355,10 @@ async def get_kp_data(horo_input: ChartInput):
     aspects = horoscope.get_planetary_aspects(chart)
     formatted_data["aspects"] = aspects
 
+    # Add planets' aspects on signs
+    # planet_aspects_on_signs = horoscope.get_planet_aspects_on_signs(chart)
+    # formatted_data["planet_aspects_on_signs"] = planet_aspects_on_signs
+
     # Add consolidated chart data by sign (rasi)
     consolidated_chart_data = horoscope.get_consolidated_chart_data(
         planets_data=planets_data,
@@ -330,8 +449,9 @@ async def get_kp_data(horo_input: ChartInput):
         formatted_house_significators.append(formatted_sig)
 
     formatted_data["planet_significators"] = formatted_planet_significators
+    formatted_data["house_significators"] = formatted_house_significators
 
-    return formatted_data
+    return {"planet_significators":  formatted_data["planet_significators"]}
 
 
 @app.post("/get_kp_chart_with_cusps")
@@ -1505,7 +1625,8 @@ async def generate_compact_transit_data(
         end_year = transit_data_request.end_year
         planets = transit_data_request.planets
         horo_input = transit_data_request.horo_input
-        print(planets)
+
+        print(start_year, end_year, planets)
         # Validate input years
         if start_year >= end_year:
             return {"status": "error", "message": "start_year must be less than end_year"}
@@ -1520,8 +1641,8 @@ async def generate_compact_transit_data(
             # Convert to set for faster lookups
             include_planets = set(planets)
 
-        # Dictionary to track each planet's position over time
-        planet_transits = {}
+        # Flattened list for transit data
+        transit_records = []
 
         # Create start and end dates
         start_date = datetime(start_year, 1, 1)
@@ -1569,10 +1690,6 @@ async def generate_compact_transit_data(
                 sign = transit.PlanetSign
                 is_retrograde = transit.isRetrograde
 
-                # Initialize if this planet hasn't been seen before
-                if planet_name not in planet_transits:
-                    planet_transits[planet_name] = []
-
                 # Check if this is a new entry or the sign has changed
                 if planet_name not in current_planet_states:
                     # First time seeing this planet
@@ -1581,11 +1698,14 @@ async def generate_compact_transit_data(
                     # Sign or retrograde status changed - record the previous state
                     prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
 
-                    planet_transits[planet_name].append({
+
+
+                    transit_records.append({
+                        "planet": planet_name,
                         "sign": prev_sign,
                         "start_date": prev_start,
                         "end_date": date_str,  # Yesterday's date as end date
-                        "isRetrograde": prev_retro
+                        "is_retrograde": prev_retro,
                     })
 
                     # Update current state with new sign
@@ -1597,41 +1717,17 @@ async def generate_compact_transit_data(
         # Record final states for all planets (using end_date as the end)
         end_date_str = f"{end_date.year}-{end_date.month:02d}-{end_date.day:02d}"
         for planet_name, (sign, start_date, is_retrograde) in current_planet_states.items():
-            planet_transits[planet_name].append({
+            transit_records.append({
+                "planet": planet_name,
                 "sign": sign,
                 "start_date": start_date,
                 "end_date": end_date_str,
-                "isRetrograde": is_retrograde
+                "is_retrograde": is_retrograde,
             })
 
-        # Special handling for Moon planet only - convert to compact string format
-        if "Moon" in planet_transits:
-            moon_data = []
-            for transit in planet_transits["Moon"]:
-                # Convert sign to number (1-12)
-                sign_number = zodiac_signs.index(transit["sign"]) + 1
-
-                # Calculate days in this transit period
-                start_date_obj = datetime.strptime(transit["start_date"], "%Y-%m-%d")
-                end_date_obj = datetime.strptime(transit["end_date"], "%Y-%m-%d")
-                days = (end_date_obj - start_date_obj).days
-
-                # Format as "sign:start_date:days:is_retrograde"
-                is_retro_int = 1 if transit["isRetrograde"] else 0
-                moon_data.append(f"{sign_number}:{transit['start_date']}:{days}:{is_retro_int}")
-
-            # Replace the Moon's data with the compact string format
-            planet_transits["Moon"] = "|".join(moon_data)
-
-
-        return str(planet_transits).replace(" ", '')
-
-
+        return {"transit_data": transit_records}
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        return {"status": "error", "message": str(e), "details": error_details}
-
+        return {"status": "error", "message": str(e)}
 
 @app.post("/generate_transit_data")
 async def generate_transit_data(
@@ -2179,7 +2275,6 @@ def get_ashtakavarga_data(chart_data):
             sarvashtakavarga[i] += bhinnashtakavarga[planet][i]
 
 
-
     # Also calculate the sarvashtakavarga in the same format
     sarva_total = {zodiac_signs[i]: sarvashtakavarga[i] for i in range(12)}
 
@@ -2318,6 +2413,138 @@ async def get_astrocartography_data(horo_input: ChartInput, planets: List[str] =
         import traceback
         print(traceback.format_exc())
         return {"status": "error", "message": str(e)}
+
+@app.post("/get_yogas")
+async def get_yogas(horo_input: ChartInput, categorize_by_influence: bool = False):
+    """
+    Analyzes a birth chart to identify important Hindu astrological yogas (planetary combinations).
+    Returns a list of yogas present in the chart with descriptions.
+
+    Args:
+        horo_input: Chart input data
+        categorize_by_influence: If True, yogas will be categorized as benefic or malefic
+                               If False (default), yogas will be categorized by traditional types
+    """
+    # First get the KP data which contains all planetary positions we need
+    kp_data = await get_kp_data(horo_input)
+
+    # Get the rasi chart data which uses Lahiri ayanamsa
+    rasi_chart_data = kp_data["rasi_chart"]
+
+    # Create consolidated planet positions directly from rasi chart data
+    # This is more accurate for yoga calculations as it properly reflects
+    # the sidereal zodiac positions
+    planet_positions = {}
+    houses_data = {house["HouseNr"]: house for house in kp_data["cusps"]}
+
+    # Define sign rulerships according to Vedic astrology
+    sign_lords = {
+        "Aries": "Mars",
+        "Taurus": "Venus",
+        "Gemini": "Mercury",
+        "Cancer": "Moon",
+        "Leo": "Sun",
+        "Virgo": "Mercury",
+        "Libra": "Venus",
+        "Scorpio": "Mars",
+        "Sagittarius": "Jupiter",
+        "Capricorn": "Saturn",
+        "Aquarius": "Saturn",
+        "Pisces": "Jupiter"
+    }
+
+    # Process the rasi chart data to create a proper planet_positions dictionary
+    for sign_data in rasi_chart_data:
+        rasi = sign_data["Rasi"]
+        for planet_entry in sign_data["Planets"]:
+            planet_name = planet_entry["Name"]
+
+            # Find which house this planet is in
+            house_nr = None
+            for house_num, house_data in houses_data.items():
+                if house_data["Rasi"] == rasi:
+                    house_nr = house_num
+                    break
+
+            # If house not found, use a fallback method from planets data
+            if house_nr is None:
+                for planet in kp_data["planets"]:
+                    if planet["Object"] == planet_name:
+                        house_nr = planet["HouseNr"]
+                        break
+
+            # Skip if we couldn't determine the house
+            if house_nr is None:
+                continue
+
+            # Gather retrograde information from planets data
+            is_retrograde = False
+            for planet in kp_data["planets"]:
+                if planet["Object"] == planet_name:
+                    is_retrograde = planet["isRetroGrade"]
+                    break
+
+            planet_positions[planet_name] = {
+                "Object": planet_name,
+                "Rasi": rasi,
+                "RasiLord": sign_lords.get(rasi, ""),  # Add the rasi lord for each planet
+                "HouseNr": house_nr,
+                "isRetroGrade": is_retrograde,
+                # Include other necessary data for yoga calculations
+                "SignLonDecDeg": planet_entry.get("SignLonDecDeg", 0),
+                "LonDecDeg": planet_entry.get("LonDecDeg", 0)
+            }
+    print(planet_positions)
+    # Enhance houses_data with proper rasi lord information
+    for house_num, house_data in houses_data.items():
+        rasi = house_data["Rasi"]
+        houses_data[house_num]["RasiLord"] = sign_lords.get(rasi, "")
+
+    # Get all yoga results by traditional categories
+    traditional_yogas = {
+        "raj_yogas": check_raj_yogas(planet_positions, houses_data),
+        "dhana_yogas": check_dhana_yogas(planet_positions, houses_data),
+        "pancha_mahapurusha_yogas": check_pancha_mahapurusha_yogas(planet_positions),
+        "nabhasa_yogas": check_nabhasa_yogas(planet_positions),
+        "other_yogas": check_other_yogas(planet_positions, houses_data),
+        "additional_benefic_yogas": check_additional_benefic_yogas(planet_positions, houses_data),
+        "intellectual_yogas": check_intellectual_yogas(planet_positions, houses_data),
+        "malefic_yogas": check_malefic_yogas(planet_positions, houses_data)
+    }
+
+    # If requested, recategorize yogas by their influence (benefic or malefic)
+    if categorize_by_influence:
+        benefic_yogas = []
+        malefic_yogas = []
+
+        # Categorize traditional yogas by influence
+        benefic_categories = ["raj_yogas", "dhana_yogas", "pancha_mahapurusha_yogas",
+                            "additional_benefic_yogas", "intellectual_yogas", "other_yogas"]
+
+        for category in benefic_categories:
+            for yoga in traditional_yogas[category]:
+                # Skip some yogas from other_yogas that are actually malefic
+                if category == "other_yogas" and yoga["name"] in ["Kemadruma Yoga", "Kala Sarpa Yoga", "Shakata Yoga"]:
+                    malefic_yogas.append(yoga)
+                else:
+                    benefic_yogas.append(yoga)
+
+        # Add malefic yogas
+        malefic_yogas.extend(traditional_yogas["malefic_yogas"])
+
+        # Some Nabhasa yogas can be either benefic or malefic depending on planets involved
+        # For simplicity, we'll add them to benefic category
+        benefic_yogas.extend(traditional_yogas["nabhasa_yogas"])
+
+        # Return yogas categorized by influence
+        return {
+            "benefic_yogas": benefic_yogas,
+            "malefic_yogas": malefic_yogas,
+            "total_yogas": len(benefic_yogas) + len(malefic_yogas)
+        }
+
+    # Return yogas categorized by traditional types
+    return traditional_yogas
 
 if __name__ == "__main__":
     import uvicorn
