@@ -1,4 +1,8 @@
-from typing import Optional, List, Dict, Any, Union
+from __future__ import annotations
+
+
+
+from typing import Optional, List, Dict, Sequence, Set, TypedDict
 from pydantic import BaseModel, field_validator, validator
 from fastapi import FastAPI, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +28,7 @@ from d_chart_calculation import (calculate_d2_position,
                                  calculate_d40_position)
 import os
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import io
 from flatlib import const
 from flatlib import aspects
@@ -171,13 +175,221 @@ async def get_vimshottari_dasa_data(vimshottari_dasa_data_request: VimshottariDa
     filtered_entries = [dasa for dasa in complete_entries if dasa['age_at_start'] >= 20 and dasa['age_at_start'] <=35]
     print(dasa for entry in filtered_entries if entry['mahadasha'] == "Sun" and entry["pratyantardasha"] == "Mercury" and entry["antardasha"]== "Venus")
 
+    return filtered_entries
+
+
+
+
+# ----------  tiny type helpers  ----------
+class KPData(TypedDict):
+    planet_significators: Sequence[Dict]
+
+class DashaPeriod(TypedDict):
+    mahadasha: str
+    antardasha: str
+    pratyantardasha: str
+    start_date: str   # ISO-8601 yyyy-mm-dd
+    end_date: str
+
+# ----------  domain constants  ----------
+MARRIAGE_HOUSES: Set[int]   = {2, 7, 11}        # KP classics
+SUPPORTIVE_HOUSES: Set[int] = {5, 9}            # romance & fortune
+NEGATIVE_HOUSES: Set[int]   = {1, 6, 10}        # self, dispute, career
+
+# ----------  scoring weights per house ----------
+HOUSE_WEIGHTS: Dict[int, float] = {
+    7: 2.0,     # ← major house, double weight
+    2: 1.0,
+    11: 1.0,
+    5: 0.5,
+    9: 0.5,
+    # any house not listed is treated as 0
+}
+
+# ----------  core helpers  ----------
+def _planet_to_houses(kp: KPData) -> Dict[str, Set[int]]:
+    """Return mapping  Planet → {houses it signifies}  (stellar+lunar-conj etc.)."""
+    return {item["Planet"]: set(item["houseSignified"])
+            for item in kp["planet_significators"]}
+
+def _period_score(lords: Sequence[str],
+                  p2h: Dict[str, Set[int]],
+                  *,
+                  min_net_hits: float = 1.5,   # ← how much positive must remain
+                  max_bad: int = 2,            # ← tolerate ≤ this many bad lords
+                  good_weight: float = 1.0,    # weight for 2/7/11
+                  supportive_weight: float = .5,  # weight for 5/9
+                  bad_penalty: float = 1.0     # how much a bad lord subtracts
+                  ) -> bool:
+    """
+    Return True when the *net* score is positive enough.
+
+    • Every lord touching 2/7/11  →  +`good_weight`
+    • Every lord touching 5/9      →  +`supportive_weight`
+    • Every lord touching 1/6/10   →  −`bad_penalty`
+
+    The period is accepted iff
+        (good_score − bad_score)  ≥  `min_net_hits`
+    and the raw count of negative lords ≤ `max_bad`.
+    """
+    good_score = 0.0
+    bad_lords = 0
+
+    for lord in lords:
+        houses = p2h.get(lord, set())
+
+        # positives
+        if houses & MARRIAGE_HOUSES:
+            good_score += good_weight
+        elif houses & SUPPORTIVE_HOUSES:
+            good_score += supportive_weight
+
+        # negatives
+        if houses & NEGATIVE_HOUSES:
+            good_score -= bad_penalty
+            bad_lords += 1
+
+    return bad_lords <= max_bad and good_score >= min_net_hits
+
+
+# ----------  numeric scorer  ----------
+def _period_net_score(lords: Sequence[str],
+                      p2h: Dict[str, Set[int]],
+                      *,
+                      house_weights: Dict[int, float] = HOUSE_WEIGHTS,
+                      bad_penalty: float = 1.0) -> float:
+    """
+    Sum of   Σ house_weights[h]  −  bad_penalty*negatives
+    for the three daśā lords.
+    """
+    score = 0.0
+    for lord in lords:
+        houses = p2h.get(lord, set())
+
+        # add positives (if house present in the table)
+        for h in houses:
+            score += house_weights.get(h, 0.0)
+
+        # subtract negatives
+        if houses & NEGATIVE_HOUSES:
+            score -= bad_penalty
+
+    return score
+
+def _merge_adjacent(raw: List[Dict],
+                    *,
+                    gap: int = 1,
+                    max_span_days: int | None = None,
+                    require_common_lord: bool = False
+                   ) -> List[Dict]:
+    """
+    Fuse adjacent periods **only** if:
+        • the gap between them ≤ `gap` days  AND
+        • the resulting span ≤ `max_span_days` (when given) AND
+        • they share at least one lord (if require_common_lord=True)
+    """
+    if not raw:
+        return []
+
+    raw.sort(key=lambda r: r["start"])
+    merged: List[Dict] = [raw[0]]
+
+    for cur in raw[1:]:
+        last = merged[-1]
+
+        close_enough = (cur["start"] - last["end"]).days <= gap
+        span_ok = (max_span_days is None or
+                   (cur["end"] - last["start"]).days <= max_span_days)
+        lord_link = (not require_common_lord or
+                     bool(set(last["lords"]) & set(cur["lords"])))
+
+        if close_enough and span_ok and lord_link:
+            last["end"] = max(last["end"], cur["end"])
+            last["lords"].extend(cur["lords"])
+        else:
+            merged.append(cur)
+
+    return merged
+
+
+
+# ----------  public API  ----------
+def list_marriage_windows(kp_data: KPData,
+                          dasha_data: Sequence[DashaPeriod],
+                          *,
+                          min_hits: int = 1,
+                          max_gap_days: int = 1,
+                          max_span_days: int = 200,
+                          require_common_lord: bool = False,
+                          max_bad: int = 1,
+                          min_net_hits: float = 1.5,
+                          bad_penalty: float = 1.0,
+                          good_weight: float = 1.0,
+                          supportive_weight: float = .5
+                          ) -> List[Dict]:
+    """
+    Return tidy list of dicts:
+        {start: date, end: date, lords: [mahantapra...], score: float}
+    """
+    p2h = _planet_to_houses(kp_data)
+    raw_candidates: List[Dict] = []
+
+    for row in dasha_data:
+        lords = [row["mahadasha"], row["antardasha"], row["pratyantardasha"]]
+
+        net = _period_net_score(
+                lords, p2h,
+                house_weights=HOUSE_WEIGHTS,
+                bad_penalty=bad_penalty)              # ★  compute true score
+
+        if _period_score(lords, p2h,
+                         max_bad=max_bad,
+                         min_net_hits=min_net_hits,    # gate still controls inclusion
+                         bad_penalty=bad_penalty,
+                         good_weight=good_weight,
+                         supportive_weight=supportive_weight):
+            raw_candidates.append({
+                "start": date.fromisoformat(row["start_date"]),
+                "end":   date.fromisoformat(row["end_date"]),
+                "lords": lords.copy(),
+                "score": round(net, 2)                # ★  keep the real value
+            })
+    return _merge_adjacent(raw_candidates, gap=max_gap_days, max_span_days=max_span_days, require_common_lord=require_common_lord)
+
+
+@app.post("/get_marriage_prediction_v2")
+async def get_marriage_prediction_v2(horo_input: ChartInput):
+    """
+    Generates marriage prediction for a given time and location
+    """
+    kp_data = await get_kp_data(horo_input)
+    vimshottari_dasa_data_request = VimshottariDasaDataRequest(
+        horo_input=horo_input,
+        start_year=horo_input.year + 20,
+        end_year=horo_input.year + 40,
+        birth_date=f"{horo_input.year}-{horo_input.month}-{horo_input.day}"
+    )
+
+    flatten_dasha_data =await get_vimshottari_dasa_data(vimshottari_dasa_data_request)
+    marriage_windows = list_marriage_windows(
+            kp_data,
+            flatten_dasha_data,
+            min_hits=1,
+            max_gap_days=1,
+            max_span_days=200,
+            require_common_lord=False,
+            max_bad=3,
+            min_net_hits=1.5,
+            bad_penalty=0,
+            good_weight=1.0,
+            supportive_weight=0.5
+        )
     return {
-        "dashas": filtered_entries
+        "total_marriage_windows": len(marriage_windows),
+        "marriage_windows": marriage_windows
     }
 
-
-
-@app.post("/get_marriage_prediction")
+@app.post("/get_marriage_prediction_v1")
 async def get_marriage_prediction(horo_input: ChartInput):
     """
     Generates marriage prediction for a given time and location
@@ -190,14 +402,22 @@ async def get_marriage_prediction(horo_input: ChartInput):
     planets_significators_list = planets_significators_list["planet_significators"]
 
     # Marriage Signifying Houses 2,7,11
-    planet_signifying_marriage_houses = [planet for planet in planets_significators_list if any(house in [2, 7, 11] for house in planet["houseSignified"])]
+    # planet_signifying_marriage_houses = [planet for planet in planets_significators_list if any(house in [2, 7, 11] for house in planet["houseSignified"])]
+
+    # Filter and remove Uranus, Neptune and Pluto from the list
+    planet_signifying_marriage_houses = [planet for planet in planets_significators_list if planet["Planet"] not in ["Uranus", "Neptune", "Pluto"]]
+
+
 
     # Score marriage plantes based on the planets in the marriage houses
     house_score_points = {
         "2": 1,
-        "7": 1,
+        "7": 2,
         "11": 1,
     }
+
+    LEVEL_WT = {"sign": 1, "star": 2, "sub": 4}
+
 
     planet_score_points = {}
 
@@ -205,16 +425,138 @@ async def get_marriage_prediction(horo_input: ChartInput):
         # Calculate score using house_score_points values
         score = 0
         for house in planet["houseSignified"]:
+
             if house in [2, 7, 11]:
                 score += house_score_points[str(house)]
         planet_score_points[planet["Planet"]] = score
 
-    # Sort the planets by score in descending order
-    sorted_planets = sorted(planet_score_points.items(), key=lambda x: x[1], reverse=True)
+    # Dictionary to store planet score combo score with points score
+    planet_score_combo_score = []
+
+    # Convert sorted_planets to dict for easier access
+    planet_scores_dict = dict(planet_score_points)
+
+    # Generate all possible combinations of planets
+    planet_names = list(planet_scores_dict.keys())
+
+    # First add all same-planet combinations
+    for planet in planet_names:
+        combined_score = planet_scores_dict[planet] * 2
+        planet_score_combo_score.append({
+            "p1": planet,
+            "p2": planet,
+            "combined_score": combined_score
+        })
+
+    # Then add unique combinations (no duplicates)
+    for i in range(len(planet_names)):
+        for j in range(i+1, len(planet_names)):
+            p1 = planet_names[i]
+            p2 = planet_names[j]
+            combined_score = planet_scores_dict[p1] + planet_scores_dict[p2]
+            planet_score_combo_score.append({
+                "p1": p1,
+                "p2": p2,
+                "combined_score": combined_score
+            })
+
+    planet_score_combo_score = [combo for combo in planet_score_combo_score if combo["combined_score"] > 0 ]
+
+    # Sort combinations by combined score in descending order
+    planet_score_combo_score.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    start_year = horo_input.year + 20
+    end_year = horo_input.year + 40
+
+    vimshottari_dasa_data_request = VimshottariDasaDataRequest(
+        horo_input=horo_input,
+        start_year=start_year,
+        end_year=end_year,
+        birth_date=f"{horo_input.year}-{horo_input.month}-{horo_input.day}"
+    )
+
+    flatten_dasha_data =await get_vimshottari_dasa_data(vimshottari_dasa_data_request)
+
+    # get the unique mahadasha from the flatten_dasha_data sort by start_date
+    # More efficient approach to extract and sort unique mahadashas
+    mahadasha_dict = {}
+
+    for dasa in flatten_dasha_data:
+        mahadasha = dasa["mahadasha"]
+        start_date = datetime.strptime(dasa["start_date"], "%Y-%m-%d")
+
+        # Only store the earliest occurrence of each mahadasha
+        if mahadasha not in mahadasha_dict or start_date < mahadasha_dict[mahadasha]:
+            mahadasha_dict[mahadasha] = start_date
+
+    # Create a list of (mahadasha, start_date) tuples and sort by start_date
+    mahadasha_list = [(mahadasha, start_date) for mahadasha, start_date in mahadasha_dict.items()]
+    mahadasha_list.sort(key=lambda x: x[1])
+
+    # Extract just the mahadasha names in order
+    unique_mahadasha = [item[0] for item in mahadasha_list]
+
+    # from the flatten_dasha_data we find the antardasha and pratyantardasha for each mahadasha based on the planet_score_combo_score
+
+    # Create a dictionary to store matching periods for each mahadasha with their scores
+    matching_periods_by_mahadasha = {}
+
+    # Create lookup dictionaries for faster matching
+    # Both p1-p2 and p2-p1 combinations
+    combo_lookup = {}
+    for combo in planet_score_combo_score:
+        p1, p2 = combo["p1"], combo["p2"]
+        score = combo["combined_score"]
+        combo_lookup[(p1, p2)] = score
+        combo_lookup[(p2, p1)] = score  # Allow for interchangeable planets
+
+    # Process each dasha entry
+    for dasha in flatten_dasha_data:
+        mahadasha = dasha["mahadasha"]
+        antardasha = dasha["antardasha"]
+        pratyantardasha = dasha["pratyantardasha"]
+
+        # Check if this antardasha-pratyantardasha pair is in our combinations
+        if (antardasha, pratyantardasha) in combo_lookup:
+            combo_score = combo_lookup[(antardasha, pratyantardasha)]
+
+            # Skip periods where pratyantardasha planet has a score of 0 or doesn't signify houses 2, 7, or 11
+            pratyantardasha_valid = False
+            for planet in planet_signifying_marriage_houses:
+                if planet["Planet"] == pratyantardasha:
+                    # Check if the planet has score > 0 and signifies houses 2, 7, or 11
+                    has_marriage_houses = any(house in [2, 7, 11] for house in planet["houseSignified"])
+                    if has_marriage_houses and planet_scores_dict.get(pratyantardasha, 0) > 0:
+                        pratyantardasha_valid = True
+                        break
+
+            # Skip this period if pratyantardasha planet doesn't meet criteria
+            if not pratyantardasha_valid:
+                continue
+
+            # Initialize the list for this mahadasha if it doesn't exist
+            if mahadasha not in matching_periods_by_mahadasha:
+                matching_periods_by_mahadasha[mahadasha] = []
+
+            # Add this period to the matching list with its score
+            matching_periods_by_mahadasha[mahadasha].append({
+                "antardasha": antardasha,
+                "pratyantardasha": pratyantardasha,
+                "combo_score": combo_score,
+                "start_date": dasha["start_date"],
+                "end_date": dasha["end_date"],
+                "age_at_start": dasha["age_at_start"]
+            })
+
+    # Sort each mahadasha's periods by combo_score in descending order
+    for mahadasha in matching_periods_by_mahadasha:
+        matching_periods_by_mahadasha[mahadasha].sort(key=lambda x: x["combo_score"], reverse=True)
 
     return {
-        "planet_score_points": sorted_planets,
-        "planet_signifying_marriage_houses": planet_signifying_marriage_houses
+        "total_planet_score_combo_score": len(planet_score_combo_score),
+        "matching_periods_by_mahadasha": matching_periods_by_mahadasha,
+        "unique_mahadasha": unique_mahadasha,
+        "planet_score_combo_score": planet_score_combo_score,
     }
 
 @app.post("/get_dasha_data")
@@ -451,7 +793,10 @@ async def get_kp_data(horo_input: ChartInput):
     formatted_data["planet_significators"] = formatted_planet_significators
     formatted_data["house_significators"] = formatted_house_significators
 
-    return {"planet_significators":  formatted_data["planet_significators"]}
+    return {"planet_significators":  formatted_data["planet_significators"],
+            "cusps": formatted_data["cusps"],
+            "planets": formatted_data["planets"],
+            }
 
 
 @app.post("/get_kp_chart_with_cusps")
