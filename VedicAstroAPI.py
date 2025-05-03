@@ -173,391 +173,10 @@ async def get_vimshottari_dasa_data(vimshottari_dasa_data_request: VimshottariDa
 
     # Filter out dashas where age was smaller than 20
     filtered_entries = [dasa for dasa in complete_entries if dasa['age_at_start'] >= 20 and dasa['age_at_start'] <=35]
-    print(dasa for entry in filtered_entries if entry['mahadasha'] == "Sun" and entry["pratyantardasha"] == "Mercury" and entry["antardasha"]== "Venus")
+
 
     return filtered_entries
 
-
-
-
-# ----------  tiny type helpers  ----------
-class KPData(TypedDict):
-    planet_significators: Sequence[Dict]
-
-class DashaPeriod(TypedDict):
-    mahadasha: str
-    antardasha: str
-    pratyantardasha: str
-    start_date: str   # ISO-8601 yyyy-mm-dd
-    end_date: str
-
-# ----------  domain constants  ----------
-MARRIAGE_HOUSES: Set[int]   = {2, 7, 11}        # KP classics
-SUPPORTIVE_HOUSES: Set[int] = {5, 9}            # romance & fortune
-NEGATIVE_HOUSES: Set[int]   = {1, 6, 10}        # self, dispute, career
-
-# ----------  scoring weights per house ----------
-HOUSE_WEIGHTS: Dict[int, float] = {
-    7: 2.0,     # ← major house, double weight
-    2: 1.0,
-    11: 1.0,
-    5: 0.5,
-    9: 0.5,
-    # any house not listed is treated as 0
-}
-
-# ----------  core helpers  ----------
-def _planet_to_houses(kp: KPData) -> Dict[str, Set[int]]:
-    """Return mapping  Planet → {houses it signifies}  (stellar+lunar-conj etc.)."""
-    return {item["Planet"]: set(item["houseSignified"])
-            for item in kp["planet_significators"]}
-
-def _period_score(lords: Sequence[str],
-                  p2h: Dict[str, Set[int]],
-                  *,
-                  min_net_hits: float = 1.5,   # ← how much positive must remain
-                  max_bad: int = 2,            # ← tolerate ≤ this many bad lords
-                  good_weight: float = 1.0,    # weight for 2/7/11
-                  supportive_weight: float = .5,  # weight for 5/9
-                  bad_penalty: float = 1.0     # how much a bad lord subtracts
-                  ) -> bool:
-    """
-    Return True when the *net* score is positive enough.
-
-    • Every lord touching 2/7/11  →  +`good_weight`
-    • Every lord touching 5/9      →  +`supportive_weight`
-    • Every lord touching 1/6/10   →  −`bad_penalty`
-
-    The period is accepted iff
-        (good_score − bad_score)  ≥  `min_net_hits`
-    and the raw count of negative lords ≤ `max_bad`.
-    """
-    good_score = 0.0
-    bad_lords = 0
-
-    for lord in lords:
-        houses = p2h.get(lord, set())
-
-        # positives
-        if houses & MARRIAGE_HOUSES:
-            good_score += good_weight
-        elif houses & SUPPORTIVE_HOUSES:
-            good_score += supportive_weight
-
-        # negatives
-        if houses & NEGATIVE_HOUSES:
-            good_score -= bad_penalty
-            bad_lords += 1
-
-    return bad_lords <= max_bad and good_score >= min_net_hits
-
-
-# ----------  numeric scorer  ----------
-def _period_net_score(lords: Sequence[str],
-                      p2h: Dict[str, Set[int]],
-                      *,
-                      house_weights: Dict[int, float] = HOUSE_WEIGHTS,
-                      bad_penalty: float = 1.0) -> float:
-    """
-    Sum of   Σ house_weights[h]  −  bad_penalty*negatives
-    for the three daśā lords.
-    """
-    score = 0.0
-    for lord in lords:
-        houses = p2h.get(lord, set())
-
-        # add positives (if house present in the table)
-        for h in houses:
-            score += house_weights.get(h, 0.0)
-
-        # subtract negatives
-        if houses & NEGATIVE_HOUSES:
-            score -= bad_penalty
-
-    return score
-
-def _merge_adjacent(raw: List[Dict],
-                    *,
-                    gap: int = 1,
-                    max_span_days: int | None = None,
-                    require_common_lord: bool = False
-                   ) -> List[Dict]:
-    """
-    Fuse adjacent periods **only** if:
-        • the gap between them ≤ `gap` days  AND
-        • the resulting span ≤ `max_span_days` (when given) AND
-        • they share at least one lord (if require_common_lord=True)
-    """
-    if not raw:
-        return []
-
-    raw.sort(key=lambda r: r["start"])
-    merged: List[Dict] = [raw[0]]
-
-    for cur in raw[1:]:
-        last = merged[-1]
-
-        close_enough = (cur["start"] - last["end"]).days <= gap
-        span_ok = (max_span_days is None or
-                   (cur["end"] - last["start"]).days <= max_span_days)
-        lord_link = (not require_common_lord or
-                     bool(set(last["lords"]) & set(cur["lords"])))
-
-        if close_enough and span_ok and lord_link:
-            last["end"] = max(last["end"], cur["end"])
-            last["lords"].extend(cur["lords"])
-        else:
-            merged.append(cur)
-
-    return merged
-
-
-
-# ----------  public API  ----------
-def list_marriage_windows(kp_data: KPData,
-                          dasha_data: Sequence[DashaPeriod],
-                          *,
-                          min_hits: int = 1,
-                          max_gap_days: int = 1,
-                          max_span_days: int = 200,
-                          require_common_lord: bool = False,
-                          max_bad: int = 1,
-                          min_net_hits: float = 1.5,
-                          bad_penalty: float = 1.0,
-                          good_weight: float = 1.0,
-                          supportive_weight: float = .5
-                          ) -> List[Dict]:
-    """
-    Return tidy list of dicts:
-        {start: date, end: date, lords: [mahantapra...], score: float}
-    """
-    p2h = _planet_to_houses(kp_data)
-    raw_candidates: List[Dict] = []
-
-    for row in dasha_data:
-        lords = [row["mahadasha"], row["antardasha"], row["pratyantardasha"]]
-
-        net = _period_net_score(
-                lords, p2h,
-                house_weights=HOUSE_WEIGHTS,
-                bad_penalty=bad_penalty)              # ★  compute true score
-
-        if _period_score(lords, p2h,
-                         max_bad=max_bad,
-                         min_net_hits=min_net_hits,    # gate still controls inclusion
-                         bad_penalty=bad_penalty,
-                         good_weight=good_weight,
-                         supportive_weight=supportive_weight):
-            raw_candidates.append({
-                "start": date.fromisoformat(row["start_date"]),
-                "end":   date.fromisoformat(row["end_date"]),
-                "lords": lords.copy(),
-                "score": round(net, 2)                # ★  keep the real value
-            })
-    return _merge_adjacent(raw_candidates, gap=max_gap_days, max_span_days=max_span_days, require_common_lord=require_common_lord)
-
-
-@app.post("/get_marriage_prediction_v2")
-async def get_marriage_prediction_v2(horo_input: ChartInput):
-    """
-    Generates marriage prediction for a given time and location
-    """
-    kp_data = await get_kp_data(horo_input)
-    vimshottari_dasa_data_request = VimshottariDasaDataRequest(
-        horo_input=horo_input,
-        start_year=horo_input.year + 20,
-        end_year=horo_input.year + 40,
-        birth_date=f"{horo_input.year}-{horo_input.month}-{horo_input.day}"
-    )
-
-    flatten_dasha_data =await get_vimshottari_dasa_data(vimshottari_dasa_data_request)
-    marriage_windows = list_marriage_windows(
-            kp_data,
-            flatten_dasha_data,
-            min_hits=1,
-            max_gap_days=1,
-            max_span_days=200,
-            require_common_lord=False,
-            max_bad=3,
-            min_net_hits=1.5,
-            bad_penalty=0,
-            good_weight=1.0,
-            supportive_weight=0.5
-        )
-    return {
-        "total_marriage_windows": len(marriage_windows),
-        "marriage_windows": marriage_windows
-    }
-
-@app.post("/get_marriage_prediction_v1")
-async def get_marriage_prediction(horo_input: ChartInput):
-    """
-    Generates marriage prediction for a given time and location
-    """
-    horoscope = VedicAstro.VedicHoroscopeData(year=horo_input.year, month=horo_input.month, day=horo_input.day,
-                                           hour=horo_input.hour, minute=horo_input.minute, second=horo_input.second,
-                                           tz=horo_input.utc, latitude=horo_input.latitude, longitude=horo_input.longitude,
-                                           ayanamsa=horo_input.ayanamsa, house_system=horo_input.house_system)
-    planets_significators_list = await get_kp_data(horo_input)
-    planets_significators_list = planets_significators_list["planet_significators"]
-
-    # Marriage Signifying Houses 2,7,11
-    # planet_signifying_marriage_houses = [planet for planet in planets_significators_list if any(house in [2, 7, 11] for house in planet["houseSignified"])]
-
-    # Filter and remove Uranus, Neptune and Pluto from the list
-    planet_signifying_marriage_houses = [planet for planet in planets_significators_list if planet["Planet"] not in ["Uranus", "Neptune", "Pluto"]]
-
-
-
-    # Score marriage plantes based on the planets in the marriage houses
-    house_score_points = {
-        "2": 1,
-        "7": 2,
-        "11": 1,
-    }
-
-    LEVEL_WT = {"sign": 1, "star": 2, "sub": 4}
-
-
-    planet_score_points = {}
-
-    for planet in planet_signifying_marriage_houses:
-        # Calculate score using house_score_points values
-        score = 0
-        for house in planet["houseSignified"]:
-
-            if house in [2, 7, 11]:
-                score += house_score_points[str(house)]
-        planet_score_points[planet["Planet"]] = score
-
-    # Dictionary to store planet score combo score with points score
-    planet_score_combo_score = []
-
-    # Convert sorted_planets to dict for easier access
-    planet_scores_dict = dict(planet_score_points)
-
-    # Generate all possible combinations of planets
-    planet_names = list(planet_scores_dict.keys())
-
-    # First add all same-planet combinations
-    for planet in planet_names:
-        combined_score = planet_scores_dict[planet] * 2
-        planet_score_combo_score.append({
-            "p1": planet,
-            "p2": planet,
-            "combined_score": combined_score
-        })
-
-    # Then add unique combinations (no duplicates)
-    for i in range(len(planet_names)):
-        for j in range(i+1, len(planet_names)):
-            p1 = planet_names[i]
-            p2 = planet_names[j]
-            combined_score = planet_scores_dict[p1] + planet_scores_dict[p2]
-            planet_score_combo_score.append({
-                "p1": p1,
-                "p2": p2,
-                "combined_score": combined_score
-            })
-
-    planet_score_combo_score = [combo for combo in planet_score_combo_score if combo["combined_score"] > 0 ]
-
-    # Sort combinations by combined score in descending order
-    planet_score_combo_score.sort(key=lambda x: x["combined_score"], reverse=True)
-
-    start_year = horo_input.year + 20
-    end_year = horo_input.year + 40
-
-    vimshottari_dasa_data_request = VimshottariDasaDataRequest(
-        horo_input=horo_input,
-        start_year=start_year,
-        end_year=end_year,
-        birth_date=f"{horo_input.year}-{horo_input.month}-{horo_input.day}"
-    )
-
-    flatten_dasha_data =await get_vimshottari_dasa_data(vimshottari_dasa_data_request)
-
-    # get the unique mahadasha from the flatten_dasha_data sort by start_date
-    # More efficient approach to extract and sort unique mahadashas
-    mahadasha_dict = {}
-
-    for dasa in flatten_dasha_data:
-        mahadasha = dasa["mahadasha"]
-        start_date = datetime.strptime(dasa["start_date"], "%Y-%m-%d")
-
-        # Only store the earliest occurrence of each mahadasha
-        if mahadasha not in mahadasha_dict or start_date < mahadasha_dict[mahadasha]:
-            mahadasha_dict[mahadasha] = start_date
-
-    # Create a list of (mahadasha, start_date) tuples and sort by start_date
-    mahadasha_list = [(mahadasha, start_date) for mahadasha, start_date in mahadasha_dict.items()]
-    mahadasha_list.sort(key=lambda x: x[1])
-
-    # Extract just the mahadasha names in order
-    unique_mahadasha = [item[0] for item in mahadasha_list]
-
-    # from the flatten_dasha_data we find the antardasha and pratyantardasha for each mahadasha based on the planet_score_combo_score
-
-    # Create a dictionary to store matching periods for each mahadasha with their scores
-    matching_periods_by_mahadasha = {}
-
-    # Create lookup dictionaries for faster matching
-    # Both p1-p2 and p2-p1 combinations
-    combo_lookup = {}
-    for combo in planet_score_combo_score:
-        p1, p2 = combo["p1"], combo["p2"]
-        score = combo["combined_score"]
-        combo_lookup[(p1, p2)] = score
-        combo_lookup[(p2, p1)] = score  # Allow for interchangeable planets
-
-    # Process each dasha entry
-    for dasha in flatten_dasha_data:
-        mahadasha = dasha["mahadasha"]
-        antardasha = dasha["antardasha"]
-        pratyantardasha = dasha["pratyantardasha"]
-
-        # Check if this antardasha-pratyantardasha pair is in our combinations
-        if (antardasha, pratyantardasha) in combo_lookup:
-            combo_score = combo_lookup[(antardasha, pratyantardasha)]
-
-            # Skip periods where pratyantardasha planet has a score of 0 or doesn't signify houses 2, 7, or 11
-            pratyantardasha_valid = False
-            for planet in planet_signifying_marriage_houses:
-                if planet["Planet"] == pratyantardasha:
-                    # Check if the planet has score > 0 and signifies houses 2, 7, or 11
-                    has_marriage_houses = any(house in [2, 7, 11] for house in planet["houseSignified"])
-                    if has_marriage_houses and planet_scores_dict.get(pratyantardasha, 0) > 0:
-                        pratyantardasha_valid = True
-                        break
-
-            # Skip this period if pratyantardasha planet doesn't meet criteria
-            if not pratyantardasha_valid:
-                continue
-
-            # Initialize the list for this mahadasha if it doesn't exist
-            if mahadasha not in matching_periods_by_mahadasha:
-                matching_periods_by_mahadasha[mahadasha] = []
-
-            # Add this period to the matching list with its score
-            matching_periods_by_mahadasha[mahadasha].append({
-                "antardasha": antardasha,
-                "pratyantardasha": pratyantardasha,
-                "combo_score": combo_score,
-                "start_date": dasha["start_date"],
-                "end_date": dasha["end_date"],
-                "age_at_start": dasha["age_at_start"]
-            })
-
-    # Sort each mahadasha's periods by combo_score in descending order
-    for mahadasha in matching_periods_by_mahadasha:
-        matching_periods_by_mahadasha[mahadasha].sort(key=lambda x: x["combo_score"], reverse=True)
-
-    return {
-        "total_planet_score_combo_score": len(planet_score_combo_score),
-        "matching_periods_by_mahadasha": matching_periods_by_mahadasha,
-        "unique_mahadasha": unique_mahadasha,
-        "planet_score_combo_score": planet_score_combo_score,
-    }
 
 @app.post("/get_dasha_data")
 async def get_chart_data(horo_input: ChartInput):
@@ -628,6 +247,7 @@ async def get_kp_data(horo_input: ChartInput):
     """
     Generates KP Astrology data for a given time and location including house cusps.
     Returns both planets and cusps with their detailed positions and lord information.
+    Also includes comprehensive KP significator analysis including sub-lord relationships.
     """
     horoscope = VedicAstro.VedicHoroscopeData(
         year=horo_input.year,
@@ -696,10 +316,6 @@ async def get_kp_data(horo_input: ChartInput):
     # Calculate planetary aspects for KP analysis
     aspects = horoscope.get_planetary_aspects(chart)
     formatted_data["aspects"] = aspects
-
-    # Add planets' aspects on signs
-    # planet_aspects_on_signs = horoscope.get_planet_aspects_on_signs(chart)
-    # formatted_data["planet_aspects_on_signs"] = planet_aspects_on_signs
 
     # Add consolidated chart data by sign (rasi)
     consolidated_chart_data = horoscope.get_consolidated_chart_data(
@@ -774,9 +390,62 @@ async def get_kp_data(horo_input: ChartInput):
 
         formatted_sig = {
             "Planet": sig.Planet,
-            "houseSignified": sorted_houses
+            "houseSignified": sorted_houses,
+            # Add the original KP significator components for reference
+            "starLordHouse": sig.A,  # House occupied by this planet's star lord
+            "occupiedHouse": sig.B,  # House occupied by the planet itself
+            "starLordRuledHouses": sig.C,  # Houses where the star lord is also the rashi lord
+            "planetRuledHouses": sig.D,  # Houses where this planet is the rashi lord
         }
         formatted_planet_significators.append(formatted_sig)
+
+    # Enhance significators with Sub-Lord analysis
+    for planet_sig in formatted_planet_significators:
+        planet_name = planet_sig["Planet"]
+        planet_data = next((p for p in formatted_data["planets"] if p["Object"] == planet_name), None)
+
+        if planet_data:
+            sub_lord = planet_data["SubLord"]
+            sub_sub_lord = planet_data["SubSubLord"]
+
+            # Find sub-lord's significators
+            sub_lord_sig = next((p for p in formatted_planet_significators if p["Planet"] == sub_lord), None)
+
+            # Find sub-sub-lord's significators
+            sub_sub_lord_sig = next((p for p in formatted_planet_significators if p["Planet"] == sub_sub_lord), None)
+
+            # Add sub-lord analysis
+            planet_sig["subLord"] = sub_lord
+            planet_sig["subLordHouseSignifications"] = sub_lord_sig["houseSignified"] if sub_lord_sig else []
+
+            # Add sub-sub-lord analysis
+            planet_sig["subSubLord"] = sub_sub_lord
+            planet_sig["subSubLordHouseSignifications"] = sub_sub_lord_sig["houseSignified"] if sub_sub_lord_sig else []
+
+            # Find conjunctions (planets in same house)
+            conjunctions = []
+            for p in formatted_data["planets"]:
+                if p["Object"] != planet_name and p["HouseNr"] == planet_data["HouseNr"]:
+                    conjunctions.append(p["Object"])
+
+            planet_sig["conjunctions"] = conjunctions
+
+            # Find aspects - corrected to use the correct keys from the aspects data
+            planet_aspects = []
+            for aspect in formatted_data["aspects"]:
+                if "P1" in aspect and "P2" in aspect and "AspectType" in aspect:
+                    if aspect["P1"] == planet_name:
+                        planet_aspects.append({
+                            "planet": aspect["P2"],
+                            "aspect": aspect["AspectType"]
+                        })
+                    elif aspect["P2"] == planet_name:
+                        planet_aspects.append({
+                            "planet": aspect["P1"],
+                            "aspect": aspect["AspectType"]
+                        })
+
+            planet_sig["aspects"] = planet_aspects
 
     # Convert house significators with descriptive names
     formatted_house_significators = []
@@ -790,13 +459,438 @@ async def get_kp_data(horo_input: ChartInput):
         }
         formatted_house_significators.append(formatted_sig)
 
+    # Define helper function for Roman numeral conversion
+    def roman_to_int(roman):
+        if roman == "Asc":
+            return 1
+
+        values = {
+            'I': 1, 'V': 5, 'X': 10, 'L': 50,
+            'C': 100, 'D': 500, 'M': 1000
+        }
+        result = 0
+        prev_value = 0
+
+        for char in reversed(roman):
+            if char in values:
+                current_value = values[char]
+                if current_value >= prev_value:
+                    result += current_value
+                else:
+                    result -= current_value
+                prev_value = current_value
+
+        return result
+
+    # Enhance house significators with cusp sub-lord analysis
+    for house_sig in formatted_house_significators:
+        house_number = roman_to_int(house_sig["House"]) if house_sig["House"] != "Asc" else 1
+
+        # Find the cusp data for this house
+        cusp_data = next((c for c in formatted_data["cusps"] if c["HouseNr"] == house_number), None)
+
+
+
+        if cusp_data:
+            sub_lord = cusp_data["SubLord"]
+            sub_sub_lord = cusp_data["SubSubLord"]
+
+            # Find sub-lord's significators
+            sub_lord_sig = next((p for p in formatted_planet_significators if p["Planet"] == sub_lord), None)
+
+            # Add cusp sub-lord analysis
+            house_sig["cuspSubLord"] = sub_lord
+            house_sig["cuspSubLordSignifications"] = sub_lord_sig["houseSignified"] if sub_lord_sig else []
+
+            # Add sub-sub-lord analysis
+            house_sig["cuspSubSubLord"] = sub_sub_lord
+            house_sig["cuspSubSubLordSignifications"] = next(
+                (p["houseSignified"] for p in formatted_planet_significators if p["Planet"] == sub_sub_lord),
+                []
+            )
+
     formatted_data["planet_significators"] = formatted_planet_significators
     formatted_data["house_significators"] = formatted_house_significators
 
-    return {"planet_significators":  formatted_data["planet_significators"],
-            "cusps": formatted_data["cusps"],
-            "planets": formatted_data["planets"],
+    # Return comprehensive KP data
+    return {
+        "planet_significators": formatted_data["planet_significators"],
+        "house_significators": formatted_data["house_significators"],
+        "cusps": formatted_data["cusps"],
+        "planets": formatted_data["planets"],
+        "aspects": formatted_data["aspects"],
+        "rasi_chart": formatted_data["rasi_chart"]
+    }
+
+
+from typing import Any, Dict, List, Set, Tuple
+
+MARRIAGE_HOUSES    = {2, 7, 11}
+OBSTRUCTION_HOUSES = {1, 6, 10}
+SUPPORT_HOUSES     = {5, 8, 12}
+
+def _count_score(houses: Set[int]) -> Dict[str, Any]:
+    """
+    Count how many houses from each category are signified and
+    derive a qualitative label from the counts.
+    """
+    g = len(houses & MARRIAGE_HOUSES)
+    b = len(houses & OBSTRUCTION_HOUSES)
+    s = len(houses & SUPPORT_HOUSES)
+
+    if g and not b:          label = "good"
+    elif g and b:            label = "mixed"
+    elif b and not g:        label = "bad"
+    elif s and not (g or b): label = "support"
+    else:                    label = "neutral"
+
+    return {"good_cnt": g, "bad_cnt": b, "supp_cnt": s, "label": label}
+
+@app.post("/get_marriage_significate_planets_v3")
+async def get_marriage_significator_planets(horo_input: ChartInput) -> Dict[str, Any]:
+    kp = await get_kp_data(horo_input)
+    planets       = kp["planets"]
+    signifs_by_pl = {p["Planet"]: p for p in kp["planet_significators"]}
+
+    def houses_of(body: str) -> List[int]:
+        rec = signifs_by_pl.get(body, {})
+        ruled = rec.get("planetRuledHouses", [])
+        occ   = [rec.get("occupiedHouse")] if rec.get("occupiedHouse") else []
+        return list({*ruled, *occ})
+
+    planets_info: List[Dict[str, Any]] = []
+    for pl in planets:
+        body = pl["Object"]
+        if body in {"Uranus","Pluto","Neptune","Asc","Chiron","Syzygy","Fortuna"}:
+            continue
+        planets_info.append({
+            "planet"                 : body,
+            "planet_houses"          : houses_of(body),
+            "nakshatra_lord"         : pl["NakshatraLord"],
+            "nakshatra_lord_houses"  : houses_of(pl["NakshatraLord"]),
+            "sub_lord"               : pl["SubLord"],
+            "sub_lord_houses"        : houses_of(pl["SubLord"]),
+        })
+
+    planet_strength_data: List[Dict[str, Any]] = []
+    marriage_planets: List[str] = []
+
+    for item in planets_info:
+        pl_score   = _count_score(set(item["planet_houses"]))
+        star_score = _count_score(set(item["nakshatra_lord_houses"]))
+        sub_score  = _count_score(set(item["sub_lord_houses"]))
+
+        planet_strength_data.append({
+            "planet"           : item["planet"],
+            "planet_score"     : pl_score,
+            "nakshatra_score"  : star_score,
+            "sub_score"        : sub_score,
+            "all_houses"       : item["planet_houses"] +
+                                 item["nakshatra_lord_houses"] +
+                                 item["sub_lord_houses"]
+        })
+
+        # ---------- selection logic (sub-lord dominates) ----------
+        if sub_score["label"] == "good":
+            marriage_planets.append(item["planet"])
+        elif sub_score["label"] == "support" and star_score["label"] == "good":
+            marriage_planets.append(item["planet"])
+        elif sub_score["label"] == "mixed" and star_score["label"] == "good":
+            marriage_planets.append(item["planet"])
+        elif star_score["label"] == "good" and pl_score["label"] == "good":
+            marriage_planets.append(item["planet"])
+        # else not chosen
+
+    return {
+        "planets_with_nakshatra_and_sub_lord": planets_info,
+        "planet_strength_data"              : planet_strength_data,
+        "marriage_planets"                  : list(dict.fromkeys(marriage_planets))  # de-dup
+    }
+
+@app.post("/get_marriage_significate_planets_v2")
+async def get_marriage_significate_planets(horo_input: ChartInput):
+    """
+    Generates the marriage significant planets data.
+    """
+    kp_data = await get_kp_data(horo_input)
+    planets_data        = kp_data["planets"]
+    planet_significators = kp_data["planet_significators"]
+
+    # ---------- STEP 2 : build *de-duplicated* house-lists ----------
+    planets_with_nakshatra_and_sub_lord = []
+    for pl in planets_data:
+        planets_with_nakshatra_and_sub_lord.append({
+            "planet"              : pl["Object"],
+            "planet_houses"       : list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == pl["Object"]), [])}) if pl["Object"] == "Ketu" or pl["Object"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
+                                                 for p in planet_significators
+                                                 if p["Planet"] == pl["Object"]), [])}),              # ★
+            "nakshatra_lord"      : pl["NakshatraLord"],
+            "nakshatra_lord_houses": list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == pl["NakshatraLord"]), [])}) if pl["NakshatraLord"] == "Ketu" or pl["NakshatraLord"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
+                                                   for p in planet_significators
+                                                   if p["Planet"] == pl["NakshatraLord"]), [])}),     # ★
+            "sub_lord"            : pl["SubLord"],
+            "sub_lord_houses"     : list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == pl["SubLord"]), [])}) if pl["SubLord"] == "Ketu" or pl["SubLord"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
+                                                   for p in planet_significators
+                                                   if p["Planet"] == pl["SubLord"]), [])})            # ★
+        })
+
+    # remove non-KP points
+    planets_with_nakshatra_and_sub_lord = [
+        d for d in planets_with_nakshatra_and_sub_lord
+        if d["planet"] not in {"Uranus","Pluto","Neptune","Asc","Chiron","Syzygy","Fortuna"}
+    ]
+
+    # house groups
+    marriage_houses    = {2, 7, 11}   # ★ STEP 3 : 11 joined to prime set
+    obstruction_houses = {1, 6, 10}
+    support_houses     = {5, 8, 12}
+
+    planet_strength_data = []
+    marriage_planets     = []
+
+    # ---------- evaluation loop ----------
+    for item in planets_with_nakshatra_and_sub_lord:
+        # STEP 3 : Boolean presence tests (no counting needed)
+        def score(hset):
+            hset = set(hset)
+            has_good = bool(hset & marriage_houses)
+            has_bad  = bool(hset & obstruction_houses)
+            has_supp = bool(hset & support_houses)
+            return {
+                "good"   : has_good and not has_bad,
+                "mixed"  : has_good and has_bad,
+                "bad"    : has_bad  and not has_good,
+                "supp"   : (not has_good) and has_supp and not has_bad
             }
+
+        pl   = score(item["planet_houses"])
+        star = score(item["nakshatra_lord_houses"])
+        sub  = score(item["sub_lord_houses"])
+
+        # record for diagnostics
+        planet_strength_data.append({
+            "planet"                          : item["planet"],
+            "planet_status"                   : pl,
+            "nakshatra_lord_status"           : star,
+            "sub_lord_status"                 : sub,
+            "house_significator"              : item["planet_houses"] +
+                                                item["nakshatra_lord_houses"] +
+                                                item["sub_lord_houses"]
+        })
+
+        # if item["planet"] == "Sun":
+        #     return {
+        #         "planet_strength_data" : planet_strength_data
+        #     }
+
+        # ---------- STEP 4 : sub-lord is king ----------
+        if sub["good"]:                               # sub-lord promises marriage
+            marriage_planets.append(item["planet"])
+        elif sub["supp"] and star["good"]:
+            marriage_planets.append(item["planet"])
+        elif sub["mixed"] and star["good"]:           # sub mixed but star rescues
+            marriage_planets.append(item["planet"])
+        elif star["good"] and pl["good"]:             # sub only support, rely on lower levels
+            marriage_planets.append(item["planet"])
+        # else: planet is not selected
+
+    return {
+        "planets_with_nakshatra_and_sub_lord": planets_with_nakshatra_and_sub_lord,
+        "planet_strength_data"              : planet_strength_data,
+        "marriage_planets"                  : marriage_planets
+    }
+
+@app.post("/get_marriage_significate_planets")
+async def get_marriage_significate_planets(horo_input: ChartInput):
+    """
+    Generates the marriage significant planets data.
+    """
+    kp_data = await get_kp_data(horo_input)
+    planets_data = kp_data["planets"]
+    planet_significators = kp_data["planet_significators"]
+    rashi_chart = kp_data["rasi_chart"]
+
+    # loop through the planets_data to get an array of planets, their nakshartras, and their sub lords significations
+    planets_with_nakshatra_and_sub_lord = []
+    planet_nakshatra_sub_lord_array = []
+    for planet in planets_data:
+        planet_dict = {
+            "planet": planet["Object"],
+            "nakshatraLord": planet["NakshatraLord"],
+            "subLord": planet["SubLord"]
+        }
+        planet_nakshatra_sub_lord_array.append(planet_dict)
+
+
+    # loop through the planet_nakshatra_sub_lord_array to map their significators from the planet_significators array
+    for planet in planet_nakshatra_sub_lord_array:
+        planets_with_nakshatra_and_sub_lord.append({
+            "planet"              : planet["planet"],
+            "planet_houses"       : list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == planet["planet"]), [])}) if planet["planet"] == "Ketu" or planet["planet"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
+                                                 for p in planet_significators
+                                                 if p["Planet"] == planet["planet"]), [])}),              # ★
+            "nakshatra_lord"      : planet["nakshatraLord"],
+            "nakshatra_lord_houses": list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == planet["nakshatraLord"]), [])}) if planet["nakshatraLord"] == "Ketu" or planet["nakshatraLord"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
+                                                   for p in planet_significators
+                                                   if p["Planet"] == planet["nakshatraLord"]), [])}),     # ★
+            "sub_lord"            : planet["subLord"],
+            "sub_lord_houses"     : list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == planet["subLord"]), [])}) if planet["subLord"] == "Ketu" or planet["subLord"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
+                                                   for p in planet_significators
+                                                   if p["Planet"] == planet["subLord"]), [])})            # ★
+        })
+
+    # Remove Uranus, Pluto, Neptune and Ascendant from the planets_with_nakshatra_and_sub_lord array first key is planet name
+    planets_with_nakshatra_and_sub_lord = [planet_dict for planet_dict in planets_with_nakshatra_and_sub_lord
+                                          if planet_dict["planet"] not in ["Uranus", "Pluto", "Neptune", "Asc","Chiron","Syzygy","Fortuna"]]
+
+    planet_strength_data = []
+
+    marriage_houses = [2, 7]
+    obstruction_houses = [1, 6, 10]
+    support_houses = [5, 8, 11, 12]
+
+    for planet in planets_with_nakshatra_and_sub_lord:
+        planet_positive =False
+        nakshatra_lord_positive = False
+        sub_lord_positive = False
+        planet_support_only_positive = False
+        nakshatra_lord_support_only_positive = False
+        sub_lord_support_only_positive = False
+
+        number_of_planet_positive = sum(1 for house in list(set(planet["planet_houses"])) if house in marriage_houses)
+        number_of_planet_support = sum(1 for house in list(set(planet["planet_houses"])) if house in support_houses)
+        number_of_planet_negative = sum(1 for house in list(set(planet["planet_houses"])) if house in obstruction_houses)
+
+        number_of_nakshatra_lord_positive = sum(1 for house in list(set(planet["nakshatra_lord_houses"])) if house in marriage_houses)
+        number_of_nakshatra_lord_support = sum(1 for house in list(set(planet["nakshatra_lord_houses"])) if house in support_houses)
+        number_of_nakshatra_lord_negative = sum(1 for house in list(set(planet["nakshatra_lord_houses"])) if house in obstruction_houses)
+
+        number_of_sub_lord_positive = sum(1 for house in list(set(planet["sub_lord_houses"])) if house in marriage_houses)
+        number_of_sub_lord_support = sum(1 for house in list(set(planet["sub_lord_houses"])) if house in support_houses)
+        number_of_sub_lord_negative = sum(1 for house in list(set(planet["sub_lord_houses"])) if house in obstruction_houses)
+
+        # sub lord is more powerful than nakshatra lord and nakshatra lord is more powerful than planet
+
+        # if planet positive houses are more than planet negative houses
+        if number_of_planet_positive > number_of_planet_negative:
+            planet_positive = True
+            if number_of_planet_support > 0:
+                planet_support_only_positive = True
+        elif number_of_planet_support > 0 and number_of_planet_negative == 0:
+            planet_support_only_positive = True
+        elif number_of_planet_positive + number_of_planet_support  > number_of_planet_negative:
+            if 7 in planet["planet_houses"] or 2 in planet["planet_houses"]:
+                planet_positive = True
+        elif number_of_planet_positive > 0 and number_of_planet_negative > 0:
+            if 7 in planet["planet_houses"]:
+                planet_positive = True
+
+
+        if number_of_nakshatra_lord_positive > number_of_nakshatra_lord_negative:
+            nakshatra_lord_positive = True
+            if number_of_nakshatra_lord_support > 0:
+                nakshatra_lord_support_only_positive = True
+        elif number_of_nakshatra_lord_support > 0 and number_of_nakshatra_lord_negative == 0:
+            nakshatra_lord_support_only_positive = True
+        elif number_of_nakshatra_lord_positive + number_of_nakshatra_lord_support  > number_of_nakshatra_lord_negative:
+            if 7 in planet["nakshatra_lord_houses"] or 2 in planet["nakshatra_lord_houses"]:
+                nakshatra_lord_positive = True
+        elif number_of_nakshatra_lord_positive > 0 and number_of_nakshatra_lord_negative > 0:
+            if 7 in planet["nakshatra_lord_houses"]:
+                nakshatra_lord_positive = True
+
+
+        if number_of_sub_lord_positive > number_of_sub_lord_negative:
+            sub_lord_positive = True
+            if number_of_sub_lord_support > 0:
+                sub_lord_support_only_positive = True
+        elif number_of_sub_lord_support > 0 and number_of_sub_lord_negative == 0:
+            sub_lord_support_only_positive = True
+        elif number_of_sub_lord_positive + number_of_sub_lord_support  > number_of_sub_lord_negative:
+            if 7 in planet["sub_lord_houses"] or 2 in planet["sub_lord_houses"]:
+                sub_lord_positive = True
+        elif number_of_sub_lord_positive > 0 and number_of_sub_lord_negative > 0:
+            if 7 in planet["sub_lord_houses"]:
+                sub_lord_positive = True
+
+
+
+        planet_strength_data.append({
+            "planet": planet["planet"],
+            "planet_positive": planet_positive,
+            "planet_support_only_positive": planet_support_only_positive,
+            "nakshatra_lord_positive": nakshatra_lord_positive,
+            "nakshatra_lord_support_only_positive": nakshatra_lord_support_only_positive,
+            "sub_lord_positive": sub_lord_positive,
+            "sub_lord_support_only_positive": sub_lord_support_only_positive,
+            "house_significator": planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]
+        })
+
+    marriage_planets = []
+
+    # Loop through the planet_strength_data
+    # to check if 2,7 are in the house with 6, 10 is it considered nuetral or still positive
+    for planet in planet_strength_data:
+        if planet["planet_positive"] and planet["nakshatra_lord_positive"] and planet["sub_lord_positive"]:
+            marriage_planets.append(planet["planet"])
+            continue
+
+        if planet["nakshatra_lord_positive"] and planet["sub_lord_positive"]:
+            marriage_planets.append(planet["planet"])
+            continue
+
+        if (planet["nakshatra_lord_positive"] or planet["planet_support_only_positive"] or planet["planet_positive"]) and planet["nakshatra_lord_positive"] and (planet["sub_lord_positive"] or planet["sub_lord_support_only_positive"]):
+            marriage_planets.append(planet["planet"])
+            continue
+
+        if (planet["sub_lord_positive"] or planet["planet_support_only_positive"] or planet["planet_positive"]) and (planet["nakshatra_lord_positive"] or planet["nakshatra_lord_support_only_positive"]) and planet["sub_lord_positive"]:
+            marriage_planets.append(planet["planet"])
+            continue
+
+        if (planet["nakshatra_lord_positive"] or planet["nakshatra_lord_support_only_positive"]) and planet["sub_lord_positive"]:
+            marriage_planets.append(planet["planet"])
+            continue
+
+
+    # Venus is a special case
+    if "Venus" not in marriage_planets:
+        for planet in planets_with_nakshatra_and_sub_lord:
+            if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
+                marriage_planets.append(planet["planet"])
+
+            if 7 in planet["sub_lord_houses"]:
+                if 2 in planet["nakshatra_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
+                    marriage_planets.append(planet["planet"])
+
+            if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"]:
+                if 11 in planet["nakshatra_lord_houses"]:
+                    marriage_planets.append(planet["planet"])
+
+
+            if planet["planet"] == "Venus":
+                venus_sum_houses = planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]
+
+                # Count houses by category
+                venus_marriage_houses = [h for h in venus_sum_houses if h in marriage_houses]
+                venus_primary_marriage_houses = [h for h in venus_sum_houses if h in [2, 7]]  # Primary marriage houses
+                venus_support_houses = [h for h in venus_sum_houses if h in support_houses]
+                venus_obstruction_houses = [h for h in venus_sum_houses if h in obstruction_houses]
+
+                # Check Venus based on expanded criteria:
+                # 1. If Venus has primary marriage houses (2 or 7), it passes regardless of obstruction houses
+                # 2. If Venus has marriage houses and support houses, it passes
+                # 3. If Venus has support houses without obstruction houses, it passes
+                if len(venus_primary_marriage_houses) > 0 or \
+                   (len(venus_marriage_houses) > 0 and len(venus_support_houses) > 0) or \
+                   (len(venus_support_houses) > 0 and len(venus_obstruction_houses) == 0):
+                    marriage_planets.append(planet["planet"])
+                    break
+
+    return {
+       "planets_with_nakshatra_and_sub_lord": planets_with_nakshatra_and_sub_lord,
+       "planet_strength_data": planet_strength_data,
+       "marriage_planets": list(dict.fromkeys(marriage_planets))
+    }
 
 
 @app.post("/get_kp_chart_with_cusps")
@@ -1971,7 +2065,6 @@ async def generate_compact_transit_data(
         planets = transit_data_request.planets
         horo_input = transit_data_request.horo_input
 
-        print(start_year, end_year, planets)
         # Validate input years
         if start_year >= end_year:
             return {"status": "error", "message": "start_year must be less than end_year"}
@@ -2839,7 +2932,7 @@ async def get_yogas(horo_input: ChartInput, categorize_by_influence: bool = Fals
                 "SignLonDecDeg": planet_entry.get("SignLonDecDeg", 0),
                 "LonDecDeg": planet_entry.get("LonDecDeg", 0)
             }
-    print(planet_positions)
+
     # Enhance houses_data with proper rasi lord information
     for house_num, house_data in houses_data.items():
         rasi = house_data["Rasi"]
