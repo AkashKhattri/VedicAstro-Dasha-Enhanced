@@ -242,6 +242,71 @@ async def get_chart_data(horo_input: ChartInput):
     # return (formatted_data)
 
 
+@app.post("/get_rashi_chart_data")
+async def get_rashi_chart_data(horo_input: ChartInput):
+    horoscope = VedicAstro.VedicHoroscopeData(
+        year=horo_input.year,
+        month=horo_input.month,
+        day=horo_input.day,
+        hour=horo_input.hour,
+        minute=horo_input.minute,
+        second=horo_input.second,
+        tz=horo_input.utc,
+        latitude=horo_input.latitude,
+        longitude=horo_input.longitude,
+        ayanamsa="Lahiri",
+        house_system="Equal"
+    )
+
+    # Generate the chart
+    chart = horoscope.generate_chart()
+
+    # Get planets and houses data
+    planets_data = horoscope.get_planets_data_from_chart(chart)
+    houses_data = horoscope.get_houses_data_from_chart(chart)
+
+    # Add consolidated chart data by sign (rasi)
+    consolidated_chart_data = horoscope.get_consolidated_chart_data(
+        planets_data=planets_data,
+        houses_data=houses_data,
+        return_style="dataframe_records"
+    )
+
+    # Reformat the consolidated chart data to be more readable
+    reformatted_chart_data = []
+    for sign_data in consolidated_chart_data:
+        # Create a better structured entry for each sign
+        formatted_sign = {
+            "Rasi": sign_data["Rasi"],
+            "Houses": [],
+            "Planets": []
+        }
+
+        # Separate houses (Roman numerals) from planets
+        for i, obj in enumerate(sign_data["Object"]):
+            is_retrograde = sign_data["isRetroGrade"][i] if i < len(sign_data["isRetroGrade"]) else False
+            longitude = sign_data["SignLonDecDeg"][i] if i < len(sign_data["SignLonDecDeg"]) else 0
+
+            if obj in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "Asc"]:
+                formatted_sign["Houses"].append({
+                    "Name": obj,
+                    "Longitude": longitude,
+                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else ""
+                })
+            else:
+                formatted_sign["Planets"].append({
+                    "Name": obj,
+                    "Longitude": longitude,
+                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else "",
+                    "isRetrograde": is_retrograde
+                })
+
+        reformatted_chart_data.append(formatted_sign)
+
+    rashi_chart = reformatted_chart_data
+
+    return rashi_chart
+
 @app.post("/get_kp_data")
 async def get_kp_data(horo_input: ChartInput):
     """
@@ -317,45 +382,7 @@ async def get_kp_data(horo_input: ChartInput):
     aspects = horoscope.get_planetary_aspects(chart)
     formatted_data["aspects"] = aspects
 
-    # Add consolidated chart data by sign (rasi)
-    consolidated_chart_data = horoscope.get_consolidated_chart_data(
-        planets_data=planets_data,
-        houses_data=houses_data,
-        return_style="dataframe_records"
-    )
-
-    # Reformat the consolidated chart data to be more readable
-    reformatted_chart_data = []
-    for sign_data in consolidated_chart_data:
-        # Create a better structured entry for each sign
-        formatted_sign = {
-            "Rasi": sign_data["Rasi"],
-            "Houses": [],
-            "Planets": []
-        }
-
-        # Separate houses (Roman numerals) from planets
-        for i, obj in enumerate(sign_data["Object"]):
-            is_retrograde = sign_data["isRetroGrade"][i] if i < len(sign_data["isRetroGrade"]) else False
-            longitude = sign_data["SignLonDecDeg"][i] if i < len(sign_data["SignLonDecDeg"]) else 0
-
-            if obj in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "Asc"]:
-                formatted_sign["Houses"].append({
-                    "Name": obj,
-                    "Longitude": longitude,
-                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else ""
-                })
-            else:
-                formatted_sign["Planets"].append({
-                    "Name": obj,
-                    "Longitude": longitude,
-                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else "",
-                    "isRetrograde": is_retrograde
-                })
-
-        reformatted_chart_data.append(formatted_sign)
-
-    formatted_data["rasi_chart"] = reformatted_chart_data
+    formatted_data["rasi_chart"] = await get_rashi_chart_data(horo_input)
 
     # Generate significators for KP analysis with more descriptive names
     planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
@@ -781,6 +808,8 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
         elif number_of_planet_positive + number_of_planet_support  > number_of_planet_negative:
             if 7 in planet["planet_houses"] or 2 in planet["planet_houses"]:
                 planet_positive = True
+            if number_of_planet_support > number_of_planet_negative:
+                planet_support_only_positive = True
         elif number_of_planet_positive > 0 and number_of_planet_negative > 0:
             if 7 in planet["planet_houses"]:
                 planet_positive = True
@@ -795,9 +824,12 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
         elif number_of_nakshatra_lord_positive + number_of_nakshatra_lord_support  > number_of_nakshatra_lord_negative:
             if 7 in planet["nakshatra_lord_houses"] or 2 in planet["nakshatra_lord_houses"]:
                 nakshatra_lord_positive = True
+            if number_of_nakshatra_lord_support > number_of_nakshatra_lord_negative:
+                nakshatra_lord_support_only_positive = True
         elif number_of_nakshatra_lord_positive > 0 and number_of_nakshatra_lord_negative > 0:
             if 7 in planet["nakshatra_lord_houses"]:
                 nakshatra_lord_positive = True
+
 
 
         if number_of_sub_lord_positive > number_of_sub_lord_negative:
@@ -809,6 +841,8 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
         elif number_of_sub_lord_positive + number_of_sub_lord_support  > number_of_sub_lord_negative:
             if 7 in planet["sub_lord_houses"] or 2 in planet["sub_lord_houses"]:
                 sub_lord_positive = True
+            if number_of_sub_lord_support > number_of_sub_lord_negative:
+                sub_lord_support_only_positive = True
         elif number_of_sub_lord_positive > 0 and number_of_sub_lord_negative > 0:
             if 7 in planet["sub_lord_houses"]:
                 sub_lord_positive = True
@@ -819,10 +853,16 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
             "planet": planet["planet"],
             "planet_positive": planet_positive,
             "planet_support_only_positive": planet_support_only_positive,
+            "planet_neutral":(number_of_planet_negative == 0 and number_of_planet_support == 0 and number_of_planet_positive == 0) or
+            (number_of_planet_positive == 0 and abs(number_of_planet_negative - number_of_planet_support) == 0),
             "nakshatra_lord_positive": nakshatra_lord_positive,
             "nakshatra_lord_support_only_positive": nakshatra_lord_support_only_positive,
+            "nakshatra_lord_neutral":(number_of_nakshatra_lord_negative == 0 and number_of_nakshatra_lord_support == 0 and number_of_nakshatra_lord_positive == 0) or
+            (number_of_nakshatra_lord_positive == 0 and abs(number_of_nakshatra_lord_negative - number_of_nakshatra_lord_support) == 0),
             "sub_lord_positive": sub_lord_positive,
             "sub_lord_support_only_positive": sub_lord_support_only_positive,
+            "sub_lord_neutral":(number_of_sub_lord_negative == 0 and number_of_sub_lord_support == 0 and number_of_sub_lord_positive == 0) or
+            (number_of_sub_lord_positive == 0 and abs(number_of_sub_lord_negative - number_of_sub_lord_support) == 0),
             "house_significator": planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]
         })
 
@@ -851,25 +891,39 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
             marriage_planets.append(planet["planet"])
             continue
 
+        if planet["planet_positive"] and planet["nakshatra_lord_neutral"] and planet["sub_lord_positive"]:
+            marriage_planets.append(planet["planet"])
+            continue
 
-    # Venus is a special case
-    if "Venus" not in marriage_planets:
-        for planet in planets_with_nakshatra_and_sub_lord:
-            if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
+
+
+    for planet in planets_with_nakshatra_and_sub_lord:
+        planet_sum_houses = list(set(planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]))
+
+        if 2 in planet_sum_houses and 7 in planet_sum_houses and 11 in planet_sum_houses:
+            marriage_planets.append(planet["planet"])
+
+        if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
+            marriage_planets.append(planet["planet"])
+
+        if 7 in planet["sub_lord_houses"]:
+            if 2 in planet["nakshatra_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
                 marriage_planets.append(planet["planet"])
 
-            if 7 in planet["sub_lord_houses"]:
-                if 2 in planet["nakshatra_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
-                    marriage_planets.append(planet["planet"])
+        if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"]:
+            if 11 in planet["nakshatra_lord_houses"]:
+                marriage_planets.append(planet["planet"])
 
-            if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"]:
-                if 11 in planet["nakshatra_lord_houses"]:
-                    marriage_planets.append(planet["planet"])
+        if 7 in planet["sub_lord_houses"] and 2 in planet["planet_houses"] and 11 in planet["planet_houses"]:
+            marriage_planets.append(planet["planet"])
 
-
-            if planet["planet"] == "Venus":
-                venus_sum_houses = planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]
-
+        if planet["planet"] == "Venus":
+            venus_sum_houses = list(set(planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]))
+            if not any(h in venus_sum_houses for h in obstruction_houses):
+                marriage_planets.append(planet["planet"])
+            elif 1 in venus_sum_houses and 6 in venus_sum_houses and 10 in venus_sum_houses:
+                pass
+            else:
                 # Count houses by category
                 venus_marriage_houses = [h for h in venus_sum_houses if h in marriage_houses]
                 venus_primary_marriage_houses = [h for h in venus_sum_houses if h in [2, 7]]  # Primary marriage houses
@@ -881,10 +935,29 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
                 # 2. If Venus has marriage houses and support houses, it passes
                 # 3. If Venus has support houses without obstruction houses, it passes
                 if len(venus_primary_marriage_houses) > 0 or \
-                   (len(venus_marriage_houses) > 0 and len(venus_support_houses) > 0) or \
-                   (len(venus_support_houses) > 0 and len(venus_obstruction_houses) == 0):
+                    (len(venus_marriage_houses) > 0 and len(venus_support_houses) > 0) or \
+                    (len(venus_support_houses) > 0 and len(venus_obstruction_houses) == 0):
                     marriage_planets.append(planet["planet"])
-                    break
+
+        if planet["planet"] == "Rahu":
+            rahu_sum_houses = planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]
+            if obstruction_houses not in rahu_sum_houses:
+                marriage_planets.append(planet["planet"])
+            else:
+                # Count houses by category
+                rahu_marriage_houses = [h for h in rahu_sum_houses if h in marriage_houses]
+                rahu_primary_marriage_houses = [h for h in rahu_sum_houses if h in [2, 7]]  # Primary marriage houses
+                rahu_support_houses = [h for h in rahu_sum_houses if h in support_houses]
+                rahu_obstruction_houses = [h for h in rahu_sum_houses if h in obstruction_houses]
+
+                # Check Venus based on expanded criteria:
+                # 1. If Venus has primary marriage houses (2 or 7), it passes regardless of obstruction houses
+                # 2. If Venus has marriage houses and support houses, it passes
+                # 3. If Venus has support houses without obstruction houses, it passes
+                if len(rahu_primary_marriage_houses) > 0 or \
+                    (len(rahu_marriage_houses) > 0 and len(rahu_support_houses) > 0) or \
+                    (len(rahu_support_houses) > 0 and len(rahu_obstruction_houses) == 0):
+                    marriage_planets.append(planet["planet"])
 
     return {
        "planets_with_nakshatra_and_sub_lord": planets_with_nakshatra_and_sub_lord,
@@ -967,45 +1040,8 @@ async def get_kp_chart_with_cusps(horo_input: ChartInput):
     aspects = horoscope.get_planetary_aspects(chart)
     formatted_data["aspects"] = aspects
 
-    # Add consolidated chart data by sign (rasi)
-    consolidated_chart_data = horoscope.get_consolidated_chart_data(
-        planets_data=planets_data,
-        houses_data=houses_data,
-        return_style="dataframe_records"
-    )
 
-    # Reformat the consolidated chart data to be more readable
-    reformatted_chart_data = []
-    for sign_data in consolidated_chart_data:
-        # Create a better structured entry for each sign
-        formatted_sign = {
-            "Rasi": sign_data["Rasi"],
-            "Houses": [],
-            "Planets": []
-        }
-
-        # Separate houses (Roman numerals) from planets
-        for i, obj in enumerate(sign_data["Object"]):
-            is_retrograde = sign_data["isRetroGrade"][i] if i < len(sign_data["isRetroGrade"]) else False
-            longitude = sign_data["SignLonDecDeg"][i] if i < len(sign_data["SignLonDecDeg"]) else 0
-
-            if obj in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "Asc"]:
-                formatted_sign["Houses"].append({
-                    "Name": obj,
-                    "Longitude": longitude,
-                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else ""
-                })
-            else:
-                formatted_sign["Planets"].append({
-                    "Name": obj,
-                    "Longitude": longitude,
-                    "LongitudeDMS": sign_data["SignLonDMS"][i] if i < len(sign_data["SignLonDMS"]) else "",
-                    "isRetrograde": is_retrograde
-                })
-
-        reformatted_chart_data.append(formatted_sign)
-
-    formatted_data["rasi_chart"] = reformatted_chart_data
+    formatted_data["rasi_chart"] = await get_rashi_chart_data(horo_input)
 
     # Generate significators for KP analysis with more descriptive names
     planet_significators = horoscope.get_planet_wise_significators(planets_data, houses_data)
