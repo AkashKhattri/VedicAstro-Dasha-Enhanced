@@ -172,7 +172,7 @@ async def get_vimshottari_dasa_data(vimshottari_dasa_data_request: VimshottariDa
         dasa['end_date'] = dasa['end_date'].strftime('%Y-%m-%d')
 
     # Filter out dashas where age was smaller than 20
-    filtered_entries = [dasa for dasa in complete_entries if dasa['age_at_start'] >= 20 and dasa['age_at_start'] <=35]
+    filtered_entries = [dasa for dasa in complete_entries if dasa['age_at_start'] >= 18 and dasa['age_at_start'] <=35]
 
 
     return filtered_entries
@@ -516,8 +516,6 @@ async def get_kp_data(horo_input: ChartInput):
         # Find the cusp data for this house
         cusp_data = next((c for c in formatted_data["cusps"] if c["HouseNr"] == house_number), None)
 
-
-
         if cusp_data:
             sub_lord = cusp_data["SubLord"]
             sub_sub_lord = cusp_data["SubSubLord"]
@@ -573,159 +571,41 @@ def _count_score(houses: Set[int]) -> Dict[str, Any]:
 
     return {"good_cnt": g, "bad_cnt": b, "supp_cnt": s, "label": label}
 
-@app.post("/get_marriage_significate_planets_v3")
-async def get_marriage_significator_planets(horo_input: ChartInput) -> Dict[str, Any]:
-    kp = await get_kp_data(horo_input)
-    planets       = kp["planets"]
-    signifs_by_pl = {p["Planet"]: p for p in kp["planet_significators"]}
 
-    def houses_of(body: str) -> List[int]:
-        rec = signifs_by_pl.get(body, {})
-        ruled = rec.get("planetRuledHouses", [])
-        occ   = [rec.get("occupiedHouse")] if rec.get("occupiedHouse") else []
-        return list({*ruled, *occ})
-
-    planets_info: List[Dict[str, Any]] = []
-    for pl in planets:
-        body = pl["Object"]
-        if body in {"Uranus","Pluto","Neptune","Asc","Chiron","Syzygy","Fortuna"}:
-            continue
-        planets_info.append({
-            "planet"                 : body,
-            "planet_houses"          : houses_of(body),
-            "nakshatra_lord"         : pl["NakshatraLord"],
-            "nakshatra_lord_houses"  : houses_of(pl["NakshatraLord"]),
-            "sub_lord"               : pl["SubLord"],
-            "sub_lord_houses"        : houses_of(pl["SubLord"]),
-        })
-
-    planet_strength_data: List[Dict[str, Any]] = []
-    marriage_planets: List[str] = []
-
-    for item in planets_info:
-        pl_score   = _count_score(set(item["planet_houses"]))
-        star_score = _count_score(set(item["nakshatra_lord_houses"]))
-        sub_score  = _count_score(set(item["sub_lord_houses"]))
-
-        planet_strength_data.append({
-            "planet"           : item["planet"],
-            "planet_score"     : pl_score,
-            "nakshatra_score"  : star_score,
-            "sub_score"        : sub_score,
-            "all_houses"       : item["planet_houses"] +
-                                 item["nakshatra_lord_houses"] +
-                                 item["sub_lord_houses"]
-        })
-
-        # ---------- selection logic (sub-lord dominates) ----------
-        if sub_score["label"] == "good":
-            marriage_planets.append(item["planet"])
-        elif sub_score["label"] == "support" and star_score["label"] == "good":
-            marriage_planets.append(item["planet"])
-        elif sub_score["label"] == "mixed" and star_score["label"] == "good":
-            marriage_planets.append(item["planet"])
-        elif star_score["label"] == "good" and pl_score["label"] == "good":
-            marriage_planets.append(item["planet"])
-        # else not chosen
-
-    return {
-        "planets_with_nakshatra_and_sub_lord": planets_info,
-        "planet_strength_data"              : planet_strength_data,
-        "marriage_planets"                  : list(dict.fromkeys(marriage_planets))  # de-dup
-    }
-
-@app.post("/get_marriage_significate_planets_v2")
-async def get_marriage_significate_planets(horo_input: ChartInput):
+async def apply_transit_to_dasa_and_chart(horo_input: ChartInput, planets: list):
     """
-    Generates the marriage significant planets data.
+    Applies the Vishmottari Dasa system to the given chart.
     """
-    kp_data = await get_kp_data(horo_input)
-    planets_data        = kp_data["planets"]
-    planet_significators = kp_data["planet_significators"]
+    vishmottari_dasa = await get_vimshottari_dasa_data(VimshottariDasaDataRequest(
+        horo_input=horo_input,
+        start_year=horo_input.year + 18,
+        end_year=horo_input.year + 35,
+        birth_date=f"{horo_input.year}-{horo_input.month}-{horo_input.day}"
+    ))
 
-    # ---------- STEP 2 : build *de-duplicated* house-lists ----------
-    planets_with_nakshatra_and_sub_lord = []
-    for pl in planets_data:
-        planets_with_nakshatra_and_sub_lord.append({
-            "planet"              : pl["Object"],
-            "planet_houses"       : list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == pl["Object"]), [])}) if pl["Object"] == "Ketu" or pl["Object"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
-                                                 for p in planet_significators
-                                                 if p["Planet"] == pl["Object"]), [])}),              # ★
-            "nakshatra_lord"      : pl["NakshatraLord"],
-            "nakshatra_lord_houses": list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == pl["NakshatraLord"]), [])}) if pl["NakshatraLord"] == "Ketu" or pl["NakshatraLord"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
-                                                   for p in planet_significators
-                                                   if p["Planet"] == pl["NakshatraLord"]), [])}),     # ★
-            "sub_lord"            : pl["SubLord"],
-            "sub_lord_houses"     : list({*next((p["houseSignified"] for p in planet_significators if p["Planet"] == pl["SubLord"]), [])}) if pl["SubLord"] == "Ketu" or pl["SubLord"] == "Rahu" else list({*next((p["planetRuledHouses"] + [p["occupiedHouse"]]
-                                                   for p in planet_significators
-                                                   if p["Planet"] == pl["SubLord"]), [])})            # ★
-        })
+    transit_data = await generate_compact_transit_data(TransitDataRequest(
+        horo_input=horo_input,
+        start_year=horo_input.year + 18,
+        end_year=horo_input.year + 35,
+        birth_date=f"{horo_input.year}-{horo_input.month}-{horo_input.day}",
+        planets=list(set(planets + ["Jupiter", "Saturn", "Rahu", "Ketu", "Sun", "Venus"]))
+    ))
 
-    # remove non-KP points
-    planets_with_nakshatra_and_sub_lord = [
-        d for d in planets_with_nakshatra_and_sub_lord
-        if d["planet"] not in {"Uranus","Pluto","Neptune","Asc","Chiron","Syzygy","Fortuna"}
-    ]
 
-    # house groups
-    marriage_houses    = {2, 7, 11}   # ★ STEP 3 : 11 joined to prime set
-    obstruction_houses = {1, 6, 10}
-    support_houses     = {5, 8, 12}
+    rashi_chart = await get_rashi_chart_data(horo_input)
 
-    planet_strength_data = []
-    marriage_planets     = []
+    # Extract unique mahadasha planets
+    mahadasha_planets = []
+    mahadasha_set = set()
 
-    # ---------- evaluation loop ----------
-    for item in planets_with_nakshatra_and_sub_lord:
-        # STEP 3 : Boolean presence tests (no counting needed)
-        def score(hset):
-            hset = set(hset)
-            has_good = bool(hset & marriage_houses)
-            has_bad  = bool(hset & obstruction_houses)
-            has_supp = bool(hset & support_houses)
-            return {
-                "good"   : has_good and not has_bad,
-                "mixed"  : has_good and has_bad,
-                "bad"    : has_bad  and not has_good,
-                "supp"   : (not has_good) and has_supp and not has_bad
-            }
+    for dasa in vishmottari_dasa:
+        if dasa["mahadasha"] not in mahadasha_set:
+            mahadasha_set.add(dasa["mahadasha"])
+            mahadasha_planets.append(dasa["mahadasha"])
 
-        pl   = score(item["planet_houses"])
-        star = score(item["nakshatra_lord_houses"])
-        sub  = score(item["sub_lord_houses"])
+    result = find_marriage_windows(vishmottari_dasa, transit_data['transit_data'], planets, rashi_chart)
 
-        # record for diagnostics
-        planet_strength_data.append({
-            "planet"                          : item["planet"],
-            "planet_status"                   : pl,
-            "nakshatra_lord_status"           : star,
-            "sub_lord_status"                 : sub,
-            "house_significator"              : item["planet_houses"] +
-                                                item["nakshatra_lord_houses"] +
-                                                item["sub_lord_houses"]
-        })
-
-        # if item["planet"] == "Sun":
-        #     return {
-        #         "planet_strength_data" : planet_strength_data
-        #     }
-
-        # ---------- STEP 4 : sub-lord is king ----------
-        if sub["good"]:                               # sub-lord promises marriage
-            marriage_planets.append(item["planet"])
-        elif sub["supp"] and star["good"]:
-            marriage_planets.append(item["planet"])
-        elif sub["mixed"] and star["good"]:           # sub mixed but star rescues
-            marriage_planets.append(item["planet"])
-        elif star["good"] and pl["good"]:             # sub only support, rely on lower levels
-            marriage_planets.append(item["planet"])
-        # else: planet is not selected
-
-    return {
-        "planets_with_nakshatra_and_sub_lord": planets_with_nakshatra_and_sub_lord,
-        "planet_strength_data"              : planet_strength_data,
-        "marriage_planets"                  : marriage_planets
-    }
+    return result
 
 @app.post("/get_marriage_significate_planets")
 async def get_marriage_significate_planets(horo_input: ChartInput):
@@ -895,27 +775,31 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
             marriage_planets.append(planet["planet"])
             continue
 
-
-
     for planet in planets_with_nakshatra_and_sub_lord:
         planet_sum_houses = list(set(planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]))
 
         if 2 in planet_sum_houses and 7 in planet_sum_houses and 11 in planet_sum_houses:
             marriage_planets.append(planet["planet"])
+            continue
 
         if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
             marriage_planets.append(planet["planet"])
+            continue
 
         if 7 in planet["sub_lord_houses"]:
             if 2 in planet["nakshatra_lord_houses"] and 11 in planet["nakshatra_lord_houses"]:
                 marriage_planets.append(planet["planet"])
+                continue
+
 
         if 7 in planet["sub_lord_houses"] and 2 in planet["sub_lord_houses"]:
             if 11 in planet["nakshatra_lord_houses"]:
                 marriage_planets.append(planet["planet"])
+                continue
 
         if 7 in planet["sub_lord_houses"] and 2 in planet["planet_houses"] and 11 in planet["planet_houses"]:
             marriage_planets.append(planet["planet"])
+            continue
 
         if planet["planet"] == "Venus":
             venus_sum_houses = list(set(planet["planet_houses"] + planet["nakshatra_lord_houses"] + planet["sub_lord_houses"]))
@@ -959,12 +843,163 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
                     (len(rahu_support_houses) > 0 and len(rahu_obstruction_houses) == 0):
                     marriage_planets.append(planet["planet"])
 
+    # Get unique marriage planets
+    unique_marriage_planets = list(dict.fromkeys(marriage_planets))
+
+    # Get unique mahadasha planets
+    result= await apply_transit_to_dasa_and_chart(horo_input, unique_marriage_planets)
+    return result
+    return {
+        "number_of_periods": len(result),
+        "result": result
+    }
     return {
        "planets_with_nakshatra_and_sub_lord": planets_with_nakshatra_and_sub_lord,
        "planet_strength_data": planet_strength_data,
-       "marriage_planets": list(dict.fromkeys(marriage_planets))
+       "marriage_planets": unique_marriage_planets,
     }
 
+
+
+
+from utility import *
+# === Main Function ===
+def find_marriage_windows(dasha_list, transit_list, marriage_significators_planets, rashi_chart):
+    # Find the rashi lord of 2nd, 7th and 11th house
+    rashi_lords_map = {}
+
+    for rashi in rashi_chart:
+        for house in rashi["Houses"]:
+            house_number = roman_to_int(house["Name"])
+            rashi_lords_map[house_number] =rashi["Rasi"]
+
+    # find the valid Mahadasha antardasha and pratyantardasha
+    valid_dasha_list = []
+    for dasha in dasha_list:
+        # Check if both antardasha and pratyantardasha are in marriage_significators_planets
+        if (dasha["antardasha"] in marriage_significators_planets and
+            dasha["pratyantardasha"] in marriage_significators_planets):
+
+            # Create a new entry with the combination
+            valid_dasha = {
+                "mahadasha": dasha["mahadasha"],
+                "antardasha": dasha["antardasha"],
+                "pratyantardasha": dasha["pratyantardasha"],
+                "start_date": dasha["start_date"],
+                "end_date": dasha["end_date"],
+                "age_at_start": dasha["age_at_start"],
+            }
+
+            valid_dasha_list.append(valid_dasha)
+        # Add the new condition: mahadasha is a significator, pratyantardasha is a significator
+        # (antardasha can be any planet)
+        # elif (dasha["mahadasha"] in marriage_significators_planets and
+        #       dasha["pratyantardasha"] in marriage_significators_planets):
+
+        #     valid_dasha = {
+        #         "mahadasha": dasha["mahadasha"],
+        #         "antardasha": dasha["antardasha"],
+        #         "pratyantardasha": dasha["pratyantardasha"],
+        #         "start_date": dasha["start_date"],
+        #         "end_date": dasha["end_date"],
+        #         "age_at_start": dasha["age_at_start"],
+        #     }
+
+            # valid_dasha_list.append(valid_dasha)
+    slow_moving_planets = ["Jupiter", "Saturn", "Rahu", "Ketu", "Sun", "Venus"]
+    # find in which rashi are slow moving planets are transiting during the valid dasha from transit_list
+    for dasha in valid_dasha_list:
+        # Use a dictionary to track unique planet-sign combinations
+        transit_dict = {}
+        for transit in transit_list:
+            if transit["planet"] in slow_moving_planets:
+                if date_ranges_overlap(transit["start_date"], transit["end_date"], dasha["start_date"], dasha["end_date"]):
+                    # From rashi_lords_map, get the planet house number and add to transit
+                    transit_sign = transit["sign"]
+                    house_number = next((house_num for house_num, sign in rashi_lords_map.items() if sign == transit_sign), None)
+                    transit["transiting_house"] = house_number
+
+
+                    transit["aspecting_houses"] = []
+                    if transit["transiting_house"] is not None:
+                        # Calculate houses that the planet aspects
+                        transit["aspecting_houses"] = get_planets_aspecting_houses(
+                            transit["planet"],
+                            transit["transiting_house"]
+                        )
+
+                    # Create a unique key for planet-sign combination
+                    key = (transit["planet"], transit_sign)
+
+                    if key in transit_dict:
+                        # If we already have this planet-sign combination, merge the date ranges
+                        existing = transit_dict[key]
+                        # Update start date if new transit starts earlier
+                        if transit["start_date"] < existing["start_date"]:
+                            existing["start_date"] = transit["start_date"]
+                        # Update end date if new transit ends later
+                        if transit["end_date"] > existing["end_date"]:
+                            existing["end_date"] = transit["end_date"]
+                        # Update aspecting houses if it's Jupiter
+                        if "aspecting_houses" in transit:
+                            existing["aspecting_houses"] = transit["aspecting_houses"]
+                    else:
+                        # First time seeing this planet-sign combination
+                        transit_dict[key] = {
+                            "planet": transit["planet"],
+                            "sign": transit_sign,
+                            "start_date": transit["start_date"],
+                            "end_date": transit["end_date"],
+                            "transiting_house": house_number,
+                        }
+                        # Add aspecting houses if it's Jupiter
+                        if "aspecting_houses" in transit:
+                            transit_dict[key]["aspecting_houses"] = transit["aspecting_houses"]
+
+        # Convert the dictionary values to a list
+        dasha["planet_transiting_list"] = list(transit_dict.values())
+    # ! CHECK LATER IF DOUBLE PLANET EXISTS
+    for dasha in valid_dasha_list:
+        dasha_points = 0
+        for planet in dasha["planet_transiting_list"]:
+            if planet['planet'] == "Jupiter":
+                # If jupiter is transiting
+                if planet['transiting_house'] in MARRIAGE_HOUSES:
+                    dasha_points += 1
+                if any(house in MARRIAGE_HOUSES for house in planet['aspecting_houses']):
+                    dasha_points += 1
+            if planet['planet'] == "Saturn":
+                if planet['transiting_house'] in MARRIAGE_HOUSES:
+                    dasha_points += 1
+                if any(house in MARRIAGE_HOUSES for house in planet['aspecting_houses']):
+                    dasha_points += 1
+
+            if planet['planet'] == "Rahu":
+                if planet['transiting_house'] in MARRIAGE_HOUSES:
+                    dasha_points += 1
+                if any(house in MARRIAGE_HOUSES for house in planet.get('aspecting_houses', [])):
+                    dasha_points += 1
+            if planet['planet'] == "Venus":
+                if planet['transiting_house'] in MARRIAGE_HOUSES:
+                    dasha_points += 1
+                if any(house in MARRIAGE_HOUSES for house in planet.get('aspecting_houses', [])):
+                    dasha_points += 1
+            if planet['planet'] == "Sun":
+                if planet['transiting_house'] in MARRIAGE_HOUSES:
+                    dasha_points += 1
+                if any(house in MARRIAGE_HOUSES for house in planet.get('aspecting_houses', [])):
+                    dasha_points += 1
+
+        dasha["dasha_points"] = dasha_points
+
+
+
+    # Sort the valid_dasha_list by dasha_points in descending order
+    sorted_dasha_list = sorted(valid_dasha_list, key=lambda x: x.get("dasha_points", 0), reverse=True)
+    return {
+        "number_of_periods": len(sorted_dasha_list),
+        "result": sorted_dasha_list[:10]
+    }
 
 @app.post("/get_kp_chart_with_cusps")
 async def get_kp_chart_with_cusps(horo_input: ChartInput):
@@ -1814,20 +1849,29 @@ async def get_horary_data(input: HoraryChartInput):
 
 def roman_to_int(roman):
     """Convert Roman numeral to integer"""
+    if roman == "Asc":
+        return 1
+
     values = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
 
-    result = 0
-    prev_value = 0
+    try:
+        result = 0
+        prev_value = 0
 
-    for char in reversed(roman):
-        current_value = values[char]
-        if current_value >= prev_value:
-            result += current_value
-        else:
-            result -= current_value
-        prev_value = current_value
+        for char in reversed(roman):
+            if char not in values:
+                raise ValueError(f"Invalid Roman numeral character: {char}")
+            current_value = values[char]
+            if current_value >= prev_value:
+                result += current_value
+            else:
+                result -= current_value
+            prev_value = current_value
 
-    return result
+        return result
+    except Exception as e:
+        print(f"Error converting Roman numeral {roman}: {str(e)}")
+        return 0  # Return 0 for invalid Roman numerals
 
 
 @app.post("/get_planet_transit_data")
@@ -2171,9 +2215,6 @@ async def generate_compact_transit_data(
                 elif current_planet_states[planet_name][0] != sign or current_planet_states[planet_name][2] != is_retrograde:
                     # Sign or retrograde status changed - record the previous state
                     prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
-
-
-
                     transit_records.append({
                         "planet": planet_name,
                         "sign": prev_sign,
@@ -2198,7 +2239,6 @@ async def generate_compact_transit_data(
                 "end_date": end_date_str,
                 "is_retrograde": is_retrograde,
             })
-
         return {"transit_data": transit_records}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -2338,8 +2378,6 @@ async def generate_transit_data(
         import traceback
         error_details = traceback.format_exc()
         return {"status": "error", "message": str(e), "details": error_details}
-
-
 
 
 def generate_transit_markdown(transits_data):
@@ -3019,6 +3057,8 @@ async def get_yogas(horo_input: ChartInput, categorize_by_influence: bool = Fals
 
     # Return yogas categorized by traditional types
     return traditional_yogas
+
+
 
 if __name__ == "__main__":
     import uvicorn
