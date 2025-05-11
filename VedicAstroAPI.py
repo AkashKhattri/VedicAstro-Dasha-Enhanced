@@ -41,6 +41,7 @@ import numpy as np
 from flatlib.datetime import Datetime
 from flatlib.geopos import GeoPos
 from flatlib.chart import Chart
+from transit_tools import merge_transits_for_dasha
 
 app = FastAPI()
 
@@ -554,25 +555,8 @@ MARRIAGE_HOUSES    = {2, 7, 11}
 OBSTRUCTION_HOUSES = {1, 6, 10}
 SUPPORT_HOUSES     = {5, 8, 12}
 
-def _count_score(houses: Set[int]) -> Dict[str, Any]:
-    """
-    Count how many houses from each category are signified and
-    derive a qualitative label from the counts.
-    """
-    g = len(houses & MARRIAGE_HOUSES)
-    b = len(houses & OBSTRUCTION_HOUSES)
-    s = len(houses & SUPPORT_HOUSES)
 
-    if g and not b:          label = "good"
-    elif g and b:            label = "mixed"
-    elif b and not g:        label = "bad"
-    elif s and not (g or b): label = "support"
-    else:                    label = "neutral"
-
-    return {"good_cnt": g, "bad_cnt": b, "supp_cnt": s, "label": label}
-
-
-async def apply_transit_to_dasa_and_chart(horo_input: ChartInput, planets: list):
+async def apply_transit_to_dasa_and_chart(horo_input: ChartInput, planets: list, planet_significators_map: dict):
     """
     Applies the Vishmottari Dasa system to the given chart.
     """
@@ -603,7 +587,7 @@ async def apply_transit_to_dasa_and_chart(horo_input: ChartInput, planets: list)
             mahadasha_set.add(dasa["mahadasha"])
             mahadasha_planets.append(dasa["mahadasha"])
 
-    result = find_marriage_windows(vishmottari_dasa, transit_data['transit_data'], planets, rashi_chart)
+    result = find_marriage_windows(vishmottari_dasa, transit_data['transit_data'], planets, rashi_chart, planet_significators_map)
 
     return result
 
@@ -847,7 +831,7 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
     unique_marriage_planets = list(dict.fromkeys(marriage_planets))
 
     # Get unique mahadasha planets
-    result= await apply_transit_to_dasa_and_chart(horo_input, unique_marriage_planets)
+    result= await apply_transit_to_dasa_and_chart(horo_input, unique_marriage_planets,planets_with_nakshatra_and_sub_lord)
     return result
     return {
         "number_of_periods": len(result),
@@ -864,7 +848,7 @@ async def get_marriage_significate_planets(horo_input: ChartInput):
 
 from utility import *
 # === Main Function ===
-def find_marriage_windows(dasha_list, transit_list, marriage_significators_planets, rashi_chart):
+def find_marriage_windows(dasha_list, transit_list, marriage_significators_planets, rashi_chart, planet_significators_list):
     # Find the rashi lord of 2nd, 7th and 11th house
     rashi_lords_map = {}
 
@@ -891,115 +875,233 @@ def find_marriage_windows(dasha_list, transit_list, marriage_significators_plane
             }
 
             valid_dasha_list.append(valid_dasha)
-        # Add the new condition: mahadasha is a significator, pratyantardasha is a significator
-        # (antardasha can be any planet)
-        # elif (dasha["mahadasha"] in marriage_significators_planets and
-        #       dasha["pratyantardasha"] in marriage_significators_planets):
-
-        #     valid_dasha = {
-        #         "mahadasha": dasha["mahadasha"],
-        #         "antardasha": dasha["antardasha"],
-        #         "pratyantardasha": dasha["pratyantardasha"],
-        #         "start_date": dasha["start_date"],
-        #         "end_date": dasha["end_date"],
-        #         "age_at_start": dasha["age_at_start"],
-        #     }
 
             # valid_dasha_list.append(valid_dasha)
-    slow_moving_planets = ["Jupiter", "Saturn", "Rahu", "Ketu", "Sun", "Venus"]
-    # find in which rashi are slow moving planets are transiting during the valid dasha from transit_list
+    slow_moving_planets = ["Jupiter", "Saturn", "Rahu", "Ketu"]
+    fast_moving_planets = [planet for planet in marriage_significators_planets if planet not in slow_moving_planets]
+
+    slow_moving_planets = slow_moving_planets + fast_moving_planets
+
     for dasha in valid_dasha_list:
-        # Use a dictionary to track unique planet-sign combinations
-        transit_dict = {}
-        for transit in transit_list:
-            if transit["planet"] in slow_moving_planets:
-                if date_ranges_overlap(transit["start_date"], transit["end_date"], dasha["start_date"], dasha["end_date"]):
-                    # From rashi_lords_map, get the planet house number and add to transit
-                    transit_sign = transit["sign"]
-                    house_number = next((house_num for house_num, sign in rashi_lords_map.items() if sign == transit_sign), None)
-                    transit["transiting_house"] = house_number
+        uniq, simult = merge_transits_for_dasha(
+            transit_list=transit_list,
+            dasha=dasha,
+            slow_moving_planets=slow_moving_planets,
+            rashi_lords_map=rashi_lords_map,
+            min_duration_days=10,
+            min_simult_planets=2,
+            filter_houses=MARRIAGE_HOUSES
+        )
+        dasha["simultaneous_windows"] = simult
 
+        # Analyze double transits of Jupiter and Saturn on marriage houses
+        dasha["double_transits"] = []
+        for window in simult:
+            # Get details of Jupiter and Saturn in this window
+            jupiter_details = window.get("planet_details", {}).get("Jupiter", {})
+            saturn_details = window.get("planet_details", {}).get("Saturn", {})
 
-                    transit["aspecting_houses"] = []
-                    if transit["transiting_house"] is not None:
-                        # Calculate houses that the planet aspects
-                        transit["aspecting_houses"] = get_planets_aspecting_houses(
-                            transit["planet"],
-                            transit["transiting_house"]
-                        )
+            # Skip if either planet is missing
+            if not jupiter_details or not saturn_details:
+                continue
 
-                    # Create a unique key for planet-sign combination
-                    key = (transit["planet"], transit_sign)
+            # Get houses affected by Jupiter (direct + aspects)
+            jupiter_houses = [jupiter_details.get("transiting_house", 0)]
+            jupiter_houses.extend(jupiter_details.get("aspecting_houses", []))
 
-                    if key in transit_dict:
-                        # If we already have this planet-sign combination, merge the date ranges
-                        existing = transit_dict[key]
-                        # Update start date if new transit starts earlier
-                        if transit["start_date"] < existing["start_date"]:
-                            existing["start_date"] = transit["start_date"]
-                        # Update end date if new transit ends later
-                        if transit["end_date"] > existing["end_date"]:
-                            existing["end_date"] = transit["end_date"]
-                        # Update aspecting houses if it's Jupiter
-                        if "aspecting_houses" in transit:
-                            existing["aspecting_houses"] = transit["aspecting_houses"]
-                    else:
-                        # First time seeing this planet-sign combination
-                        transit_dict[key] = {
-                            "planet": transit["planet"],
-                            "sign": transit_sign,
-                            "start_date": transit["start_date"],
-                            "end_date": transit["end_date"],
-                            "transiting_house": house_number,
-                        }
-                        # Add aspecting houses if it's Jupiter
-                        if "aspecting_houses" in transit:
-                            transit_dict[key]["aspecting_houses"] = transit["aspecting_houses"]
+            # Get houses affected by Saturn (direct + aspects)
+            saturn_houses = [saturn_details.get("transiting_house", 0)]
+            saturn_houses.extend(saturn_details.get("aspecting_houses", []))
 
-        # Convert the dictionary values to a list
-        dasha["planet_transiting_list"] = list(transit_dict.values())
-    # ! CHECK LATER IF DOUBLE PLANET EXISTS
+            # Find common houses between Jupiter and Saturn that are marriage houses
+            common_marriage_houses = [h for h in MARRIAGE_HOUSES if h in jupiter_houses and h in saturn_houses]
+
+            if common_marriage_houses:
+                dasha["double_transits"].append({
+                    "window_start": window.get("start_date"),
+                    "window_end": window.get("end_date"),
+                    "duration_days": window.get("duration_days", 0),
+                    "affected_houses": common_marriage_houses,
+                    "jupiter_houses": jupiter_houses,
+                    "saturn_houses": saturn_houses
+                })
+
+    HOUSE_WT = {7:1.0, 2:0.8, 11:0.6}
     for dasha in valid_dasha_list:
         dasha_points = 0
-        for planet in dasha["planet_transiting_list"]:
-            if planet['planet'] == "Jupiter":
-                # If jupiter is transiting
-                if planet['transiting_house'] in MARRIAGE_HOUSES:
-                    dasha_points += 1
-                if any(house in MARRIAGE_HOUSES for house in planet['aspecting_houses']):
-                    dasha_points += 1
-            if planet['planet'] == "Saturn":
-                if planet['transiting_house'] in MARRIAGE_HOUSES:
-                    dasha_points += 1
-                if any(house in MARRIAGE_HOUSES for house in planet['aspecting_houses']):
-                    dasha_points += 1
 
-            if planet['planet'] == "Rahu":
-                if planet['transiting_house'] in MARRIAGE_HOUSES:
-                    dasha_points += 1
-                if any(house in MARRIAGE_HOUSES for house in planet.get('aspecting_houses', [])):
-                    dasha_points += 1
-            if planet['planet'] == "Venus":
-                if planet['transiting_house'] in MARRIAGE_HOUSES:
-                    dasha_points += 1
-                if any(house in MARRIAGE_HOUSES for house in planet.get('aspecting_houses', [])):
-                    dasha_points += 1
-            if planet['planet'] == "Sun":
-                if planet['transiting_house'] in MARRIAGE_HOUSES:
-                    dasha_points += 1
-                if any(house in MARRIAGE_HOUSES for house in planet.get('aspecting_houses', [])):
-                    dasha_points += 1
+        # Add points for double transits (Jupiter + Saturn on same marriage house)
+        double_transit_points = 0
+        double_transit_houses = set()
 
-        dasha["dasha_points"] = dasha_points
+        for dt in dasha.get("double_transits", []):
+            # Points based on duration and houses
+            duration_factor = min(1.0, dt.get("duration_days", 0) / 30.0)  # Cap at 1.0 for 30+ days
 
+            for house in dt.get("affected_houses", []):
+                # Weight by house importance
+                house_weight = HOUSE_WT.get(house, 0.5)
+                # Double transits are considered very powerful
+                double_transit_points += 3.0 * house_weight * duration_factor
+                double_transit_houses.add(house)
 
+        # Add double transit points
+        dasha_points += double_transit_points
+
+        # Check if we have multiple marriage houses under double transit
+        if len(double_transit_houses) >= 2:
+            # Significant bonus for having 2+ marriage houses under double transit
+            dasha_points += 4.0
+        elif len(double_transit_houses) == 1:
+            # If only one house has double transit, check if dasha lords activate other houses
+            remaining_houses = [h for h in MARRIAGE_HOUSES if h not in double_transit_houses]
+            dasha_houses = dasha.get("combined_significators", [])
+
+            # If dasha lords activate at least one of the remaining marriage houses
+            if any(h in dasha_houses for h in remaining_houses):
+                dasha_points += 2.0
+
+        # Add regular window points as calculated before
+        for window in dasha.get("simultaneous_windows", []):
+            # Calculate normalized duration factor (0.5-1.0) based on window duration
+            # Cap at 60 days (2 months) for max effect
+            d = window.get("duration_days", 0)
+            duration_factor = 1 - 0.5 * (0.9 ** d)  # 3 d→0.14, 14 d→0.38, 60 d→0.49
+            duration_factor += 0.5  # shift to 0.5-1.0 band
+
+            # Count planets in marriage houses in this window
+            marriage_house_planets = set()
+            marriage_aspecting_planets = set()
+
+            marriage_houses_affected = 0
+
+            # Check which marriage houses are affected
+            for house in window.get("houses_affected", []):
+                if house in HOUSE_WT:
+                    marriage_houses_affected += HOUSE_WT[house]
+
+            # Check planets
+            for planet_name, details in window.get("planet_details", {}).items():
+                # Check if planet is transiting marriage houses
+                if details.get("transiting_house") in MARRIAGE_HOUSES:
+                    marriage_house_planets.add(planet_name)
+
+                # Check if planet aspects marriage houses
+                if any(house in MARRIAGE_HOUSES for house in details.get("aspecting_houses", [])):
+                    marriage_aspecting_planets.add(planet_name)
+
+            # Award points based on:
+
+            # 1. Number of marriage houses affected
+            dasha_points += marriage_houses_affected * 0.5 * duration_factor
+
+            # 2. Number of planets in marriage houses
+            dasha_points += len(marriage_house_planets) * 0.75 * duration_factor
+
+            # 3. Number of planets aspecting marriage houses
+            dasha_points += len(marriage_aspecting_planets) * 0.5 * duration_factor
+
+            # 4. Special combos - Jupiter and Venus involvement
+            if "Jupiter" in marriage_house_planets and "Venus" in marriage_house_planets:
+                dasha_points += 2 * duration_factor  # Both in marriage houses
+            elif "Jupiter" in marriage_house_planets or "Venus" in marriage_house_planets:
+                dasha_points += 1 * duration_factor  # One in marriage houses
+
+            # 5. Bonus for multiple planets in transit window
+            num_planets = len(window.get("planets", []))
+            if num_planets >= 4:
+                dasha_points += 1.5 * duration_factor  # Many planets active together
+            elif num_planets == 3:
+                dasha_points += 1 * duration_factor  # Three planets active together
+
+            # 6. Add points for benefic planets aspecting
+            if "Jupiter" in marriage_aspecting_planets:
+                dasha_points += 0.75 * duration_factor
+            if "Venus" in marriage_aspecting_planets:
+                dasha_points += 0.75 * duration_factor
+
+        dasha["dasha_points"] = round(dasha_points, 2)
+        dasha["double_transit_count"] = len(double_transit_houses)
+
+        # Simplify combining significators
+        lords = [dasha['mahadasha'], dasha['antardasha'], dasha['pratyantardasha']]
+        significators = [next((s for s in planet_significators_list if s['planet'] == lord), None) for lord in lords]
+
+        # Combine all significations from the three periods
+        all_significations = []
+        for sig in significators:
+            if sig:  # Check if significator was found
+                all_significations.extend(sig['planet_houses'])
+                all_significations.extend(sig['nakshatra_lord_houses'])
+                all_significations.extend(sig['sub_lord_houses'])
+
+        dasha["combined_significators"] = list(set(all_significations))
+
+        # Store whether this dasha has the ideal "perfect trigger" condition
+        dasha["is_perfect_trigger"] = (len(double_transit_houses) >= 2) or (
+            len(double_transit_houses) == 1 and
+            any(h in dasha.get("combined_significators", []) for h in MARRIAGE_HOUSES if h not in double_transit_houses)
+        )
 
     # Sort the valid_dasha_list by dasha_points in descending order
     sorted_dasha_list = sorted(valid_dasha_list, key=lambda x: x.get("dasha_points", 0), reverse=True)
+
+    # get the top 15 dashas
+    top_15_dashas = sorted_dasha_list[:15]
+
+    # Calculate marriage compatibility score for each dasha
+    for dasha in top_15_dashas:
+        combined_houses = dasha.get("combined_significators", [])
+
+        # Calculate a house-based marriage score
+        # Strong weight for marriage houses (especially 7th house)
+        marriage_score = 0
+        for house in MARRIAGE_HOUSES:
+            if house in combined_houses:
+                # 7th house is the primary marriage house, give it extra weight
+                weight = 3.0 if house == 7 else 2.0
+                marriage_score += weight
+
+        # Medium weight for support houses
+        support_score = sum(1.0 for house in combined_houses if house in SUPPORT_HOUSES)
+
+        # Negative weight for obstruction houses
+        obstruction_score = sum(-1.5 for house in combined_houses if house in OBSTRUCTION_HOUSES)
+
+        # Total house-based score
+        house_score = marriage_score + support_score + obstruction_score
+
+        # Store the house analysis
+        dasha["house_analysis"] = {
+            "marriage_houses": [h for h in combined_houses if h in MARRIAGE_HOUSES],
+            "support_houses": [h for h in combined_houses if h in SUPPORT_HOUSES],
+            "obstruction_houses": [h for h in combined_houses if h in OBSTRUCTION_HOUSES],
+            "house_score": round(house_score, 2)
+        }
+
+        # Combined score with house score prioritized (80% house, 20% transit)
+        dasha["combined_score"] = round(
+            0.7 * house_score +
+            0.3 * dasha.get("dasha_points", 0),
+            2
+        )
+
+    # Re-sort based on combined score
+    top_15_dashas.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
+
+    # Add ranking to each dasha
+    for i, dasha in enumerate(top_15_dashas):
+        dasha["rank"] = i + 1  # Add 1-based ranking
+
+    # Now sort it with start and end date
+    # top_15_dashas.sort(key=lambda x: x.get("start_date", 0), reverse=False)
+
     return {
-        "number_of_periods": len(sorted_dasha_list),
-        "result": sorted_dasha_list[:10]
+        "number_of_periods": len(top_15_dashas),
+        "result": top_15_dashas
     }
+
+
 
 @app.post("/get_kp_chart_with_cusps")
 async def get_kp_chart_with_cusps(horo_input: ChartInput):
@@ -1947,187 +2049,9 @@ async def get_planet_transit_data(horo_input: ChartInput, start_year: int = 2000
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.post("/generate_json_file_transit_data")
-async def generate_json_file_transit_data(
-    horo_input: ChartInput = None,
-    start_year: int = 1990,
-    end_year: int = 2100,
-    filename: str = None
-):
-    """
-    Generates a JSON file with the transit data from start_year to end_year.
-    Data is grouped by planet and sign, showing date ranges for each planet's
-    stay in a sign (e.g., "Sun in Sagittarius from 1/1/2024 to 1/19/2024").
-
-    If no chart input is provided, uses default coordinates for New Delhi, India.
-
-    Parameters:
-    ----------
-    horo_input: ChartInput, optional
-        The chart input data. If None, defaults to New Delhi coordinates.
-    start_year: int, default=2024
-        The starting year for transit calculations
-    end_year: int, default=2026
-        The ending year for transit calculations
-    filename: str, optional
-        Custom filename for the JSON output. If None, a default name will be generated.
-
-    Returns:
-    -------
-    FileResponse
-        A downloadable JSON file with transit data grouped by planet and sign
-    """
-    try:
-        # Use New Delhi coordinates if no input is provided
-        if horo_input is None:
-            horo_input = ChartInput(
-                year=2000,  # Arbitrary base year
-                month=1,
-                day=1,
-                hour=12,
-                minute=0,
-                second=0,
-                utc="+05:30",  # India Standard Time
-                latitude=28.6139,  # New Delhi latitude
-                longitude=77.2090,  # New Delhi longitude
-                ayanamsa="Krishnamurti",
-                house_system="Placidus"
-            )
-
-        # Validate input years
-        if start_year >= end_year:
-            return {"status": "error", "message": "start_year must be less than end_year"}
-
-        # if end_year - start_year > 200:
-        #     return {"status": "error", "message": "Maximum range of 200 years is allowed for transit calculations"}
-
-        # Dictionary to track each planet's position over time
-        # Structure: {planet_name: [{sign: "...", start_date: "...", end_date: "...", retrograde: bool}, ...]}
-        planet_transits = {}
-
-        # Create start and end dates
-        start_date = datetime(start_year, 1, 1)
-        end_date = datetime(end_year, 12, 31)
-
-        # Current state tracking for each planet
-        current_planet_states = {}  # {planet_name: (sign, start_date, is_retrograde)}
-
-        # Loop through each day in the range
-        current_date = start_date
-        while current_date <= end_date:
-            # Create a new VedicHoroscopeData object for each day
-            horoscope = VedicAstro.VedicHoroscopeData(
-                year=current_date.year,
-                month=current_date.month,
-                day=current_date.day,
-                hour=horo_input.hour,
-                minute=horo_input.minute,
-                second=horo_input.second,
-                latitude=horo_input.latitude,
-                longitude=horo_input.longitude,
-                tz=horo_input.utc,
-                ayanamsa=horo_input.ayanamsa,
-                house_system=horo_input.house_system
-            )
-
-            # Get transit details for this day
-            transit_data = horoscope.get_transit_details()
-
-            # Format date string (M/D/YYYY)
-            month_str = str(current_date.month)
-            day_str = str(current_date.day)
-            year_str = str(current_date.year)
-            date_str = f"{month_str}/{day_str}/{year_str}"
-
-            # Process each planet's transit
-            for transit in transit_data:
-                planet_name = transit.PlanetName
-                sign = transit.PlanetSign
-                is_retrograde = transit.isRetrograde
-
-                # Initialize if this planet hasn't been seen before
-                if planet_name not in planet_transits:
-                    planet_transits[planet_name] = []
-
-                # Check if this is a new entry or the sign has changed
-                if planet_name not in current_planet_states:
-                    # First time seeing this planet
-                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
-                elif current_planet_states[planet_name][0] != sign or current_planet_states[planet_name][2] != is_retrograde:
-                    # Sign or retrograde status changed - record the previous state
-                    prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
-
-                    planet_transits[planet_name].append({
-                        "sign": prev_sign,
-                        "start_date": prev_start,
-                        "end_date": date_str,  # Yesterday's date as end date
-                        "isRetrograde": prev_retro
-                    })
-
-                    # Update current state with new sign
-                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
-
-            # Move to the next day
-            current_date += timedelta(days=1)
-
-        # Record final states for all planets (using end_date as the end)
-        end_date_str = f"{end_date.year}-{end_date.month:02d}-{end_date.day:02d}"
-        for planet_name, (sign, start_date, is_retrograde) in current_planet_states.items():
-            planet_transits[planet_name].append({
-                "sign": sign,
-                "start_date": start_date,
-                "end_date": end_date_str,
-                "isRetrograde": is_retrograde
-            })
-
-        # Special handling for Moon planet only - convert to compact string format
-        if "Moon" in planet_transits:
-            moon_data = []
-            for transit in planet_transits["Moon"]:
-                # Convert sign to number (1-12)
-                sign_number = zodiac_signs.index(transit["sign"]) + 1
-
-                # Calculate days in this transit period
-                start_date_obj = datetime.strptime(transit["start_date"], "%Y-%m-%d")
-                end_date_obj = datetime.strptime(transit["end_date"], "%Y-%m-%d")
-                days = (end_date_obj - start_date_obj).days
-
-                # Format as "sign:start_date:days:is_retrograde"
-                is_retro_int = 1 if transit["isRetrograde"] else 0
-                moon_data.append(f"{sign_number}:{transit['start_date']}:{days}:{is_retro_int}")
-
-            # Replace the Moon's data with the compact string format
-            planet_transits["Moon"] = "|".join(moon_data)
-
-        # Return the entire dictionary with all planets
-        import json
-        return json.dumps(planet_transits, separators=(',', ':'))
-
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        return {"status": "error", "message": str(e), "details": error_details}
 
 
 
-def generate_transit_markdown(transits_data):
-    markdown = "# Planetary Transits\n\n"
-
-    for planet_data in transits_data:
-        planet = planet_data["planet"]
-        markdown += f"## {planet}\n\n"
-
-        for transit in planet_data["transits"]:
-            sign = transit["sign"]
-            start = transit["start_date"]
-            end = transit["end_date"]
-            retrograde = "♺ Retrograde" if transit["isRetrograde"] else "Direct"
-
-            markdown += f"- **{sign}**: {start} to {end} ({retrograde})\n"
-
-        markdown += "\n"
-
-    return markdown
 
 class TransitDataRequest(BaseModel):
     horo_input:ChartInput
@@ -2380,202 +2304,6 @@ async def generate_transit_data(
         return {"status": "error", "message": str(e), "details": error_details}
 
 
-def generate_transit_markdown(transits_data):
-    markdown = "# Planetary Transits\n\n"
-
-    for planet_data in transits_data:
-        planet = planet_data["planet"]
-        markdown += f"## {planet}\n\n"
-
-        for transit in planet_data["transits"]:
-            sign = transit["sign"]
-            start = transit["start_date"]
-            end = transit["end_date"]
-            retrograde = "♺ Retrograde" if transit["isRetrograde"] else "Direct"
-
-            markdown += f"- **{sign}**: {start} to {end} ({retrograde})\n"
-
-        markdown += "\n"
-
-    return markdown
-
-@app.post("/generate_markdown_transit_data")
-async def generate_markdown_transit_data(
-    horo_input: ChartInput = None,
-    start_year: int = 1993,
-    end_year: int = 2025,
-    planets: List[str] = None  # New parameter to specify which planets to include
-):
-    """
-    Generates highly optimized markdown transit data using minimal tokens.
-    Excludes Uranus, Neptune, and Pluto from results.
-
-    Parameters:
-    ----------
-    horo_input: ChartInput, optional
-        The chart input data. If None, defaults to New Delhi coordinates.
-    start_year: int, default=1993
-        The starting year for transit calculations
-    end_year: int, default=2025
-        The ending year for transit calculations
-    planets: List[str], optional
-        List of planets to include in the results (e.g., ["Sun", "Moon", "Saturn"]).
-        If not provided, all planets except Uranus, Neptune, and Pluto will be included.
-    """
-    try:
-        # Use New Delhi coordinates if no input is provided
-        if horo_input is None:
-            horo_input = ChartInput(
-                year=2000,
-                month=1,
-                day=1,
-                hour=12,
-                minute=0,
-                second=0,
-                utc="+05:30",
-                latitude=28.6139,
-                longitude=77.2090,
-                ayanamsa="Krishnamurti",
-                house_system="Placidus"
-            )
-
-        # Validate input years
-        if start_year >= end_year:
-            return {"status": "error", "message": "start_year must be less than end_year"}
-
-        # Always exclude these planets
-        excluded_planets = ["Uranus", "Neptune", "Pluto"]
-
-        # If planets parameter is provided, use it for filtering
-        # Otherwise, include all valid planets by default
-        include_planets = None
-        if planets:
-            # Convert to set for faster lookups
-            include_planets = set(planets)
-
-        # Dictionary to track each planet's position over time
-        planet_transits = {}
-
-        # Create start and end dates
-        start_date = datetime(start_year, 1, 1)
-        end_date = datetime(end_year, 12, 31)
-
-        # Current state tracking for each planet
-        current_planet_states = {}  # {planet_name: (sign, start_date, is_retrograde)}
-
-        # Loop through each day in the range
-        current_date = start_date
-        while current_date <= end_date:
-            # Create a new VedicHoroscopeData object for each day
-            horoscope = VedicAstro.VedicHoroscopeData(
-                year=current_date.year,
-                month=current_date.month,
-                day=current_date.day,
-                hour=horo_input.hour,
-                minute=horo_input.minute,
-                second=horo_input.second,
-                latitude=horo_input.latitude,
-                longitude=horo_input.longitude,
-                tz=horo_input.utc,
-                ayanamsa=horo_input.ayanamsa,
-                house_system=horo_input.house_system
-            )
-
-            # Get transit details for this day
-            transit_data = horoscope.get_transit_details()
-
-            # Format date string (YYYY-MM-DD)
-            date_str = f"{current_date.year}-{current_date.month:02d}-{current_date.day:02d}"
-
-            # Process each planet's transit
-            for transit in transit_data:
-                planet_name = transit.PlanetName
-
-                # Skip excluded planets
-                if planet_name in excluded_planets:
-                    continue
-
-                # Skip planets not in the include list (if specified)
-                if include_planets is not None and planet_name not in include_planets:
-                    continue
-
-                sign = transit.PlanetSign
-                is_retrograde = transit.isRetrograde
-
-                # Initialize if this planet hasn't been seen before
-                if planet_name not in planet_transits:
-                    planet_transits[planet_name] = []
-
-                # Check if this is a new entry or the sign has changed
-                if planet_name not in current_planet_states:
-                    # First time seeing this planet
-                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
-                elif current_planet_states[planet_name][0] != sign or current_planet_states[planet_name][2] != is_retrograde:
-                    # Sign or retrograde status changed - record the previous state
-                    prev_sign, prev_start, prev_retro = current_planet_states[planet_name]
-
-                    planet_transits[planet_name].append({
-                        "sign": prev_sign,
-                        "start_date": prev_start,
-                        "end_date": date_str,
-                        "isRetrograde": prev_retro
-                    })
-
-                    # Update current state with new sign
-                    current_planet_states[planet_name] = (sign, date_str, is_retrograde)
-
-            # Move to the next day
-            current_date += timedelta(days=1)
-
-        # Record final states for all planets
-        end_date_str = f"{end_date.year}-{end_date.month:02d}-{end_date.day:02d}"
-        for planet_name, (sign, start_date, is_retrograde) in current_planet_states.items():
-            planet_transits[planet_name].append({
-                "sign": sign,
-                "start_date": start_date,
-                "end_date": end_date_str,
-                "isRetrograde": is_retrograde
-            })
-
-        # Planet and sign abbreviations
-        planet_abbr = {
-            "Sun": "Su", "Moon": "Mo", "Mercury": "Me",
-            "Venus": "Ve", "Mars": "Ma", "Jupiter": "Ju",
-            "Saturn": "Sa", "Rahu": "Ra", "Ketu": "Ke"
-        }
-
-        sign_abbr = {
-            "Aries": "1", "Taurus": "2", "Gemini": "3", "Cancer": "4",
-            "Leo": "5", "Virgo": "6", "Libra": "7", "Scorpio": "8",
-            "Sagittarius": "9", "Capricorn": "10", "Aquarius": "11", "Pisces": "12"
-        }
-
-        # Generate ultra-compact markdown
-        markdown = "#Transits\n"
-
-        for planet, transits in planet_transits.items():
-            p_code = planet_abbr.get(planet, planet[:2])
-            markdown += f"{p_code}:"
-
-            transit_parts = []
-            for t in transits:
-                # Further optimize dates by using YY-MM-DD format
-                start = t["start_date"].replace("-", "")[2:]  # YYYYMMDD → YYMMDD
-                end = t["end_date"].replace("-", "")[2:]      # YYYYMMDD → YYMMDD
-
-                sign_code = sign_abbr.get(t["sign"], t["sign"][:2])
-                r_mark = "R" if t["isRetrograde"] else ""
-
-                transit_parts.append(f"{sign_code}{r_mark}:{start}/{end}")
-
-            markdown += ",".join(transit_parts) + "\n"
-
-        return Response(content=markdown, media_type="text/markdown")
-
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        return {"status": "error", "message": str(e), "details": error_details}
 
 def format_consolidated_chart_data(data):
     formatted_data = []
@@ -2799,264 +2527,6 @@ def get_ashtakavarga_data(chart_data):
 
         "bhinnashtaka_varga": bhinnashtakavarga_data
     }
-
-@app.post("/get_astrocartography_data")
-async def get_astrocartography_data(horo_input: ChartInput, planets: List[str] = None):
-    """
-    Generate astrocartography data for a birth chart.
-    Returns planetary lines data suitable for rendering on a world map.
-
-    Parameters:
-    ----------
-    horo_input: ChartInput
-        The chart input data (birth details)
-    planets: List[str], optional
-        List of planets to include in the analysis. If None, all major planets are included.
-
-    Returns:
-    -------
-    JSON response containing astrocartography data:
-        - status: Success or error status
-        - birthLocation: The birth location coordinates
-        - lines: Array of planetary line data for mapping
-    """
-    try:
-
-
-        # Create a VedicHoroscopeData object from the input
-        horoscope = VedicAstro.VedicHoroscopeData(
-            year=horo_input.year,
-            month=horo_input.month,
-            day=horo_input.day,
-            hour=horo_input.hour,
-            minute=horo_input.minute,
-            second=horo_input.second,
-            latitude=horo_input.latitude,
-            longitude=horo_input.longitude,
-            tz=horo_input.utc,
-            ayanamsa=horo_input.ayanamsa,
-            house_system=horo_input.house_system
-        )
-
-        # Create an AstrocartographyCalculator instance
-        try:
-            astrocartography = AstrocartographyCalculator(horoscope)
-            print("Successfully created AstrocartographyCalculator")
-        except Exception as e:
-            print(f"Error creating AstrocartographyCalculator: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
-            return {"status": "error", "message": f"Error initializing astrocartography: {str(e)}"}
-
-        # Process the planets list if provided
-        planet_list = None
-        if planets:
-            print(f"Processing planets list: {planets}")
-            # Convert common name formats to flatlib planet constants
-            planet_mapping = {
-                "sun": const.SUN,
-                "moon": const.MOON,
-                "mercury": const.MERCURY,
-                "venus": const.VENUS,
-                "mars": const.MARS,
-                "jupiter": const.JUPITER,
-                "saturn": const.SATURN,
-                "uranus": const.URANUS,
-                "neptune": const.NEPTUNE,
-                "pluto": const.PLUTO,
-                "rahu": const.NORTH_NODE,
-                "ketu": const.SOUTH_NODE,
-                "north node": const.NORTH_NODE,
-                "south node": const.SOUTH_NODE,
-                # Add capitalized versions too
-                "Sun": const.SUN,
-                "Moon": const.MOON,
-                "Mercury": const.MERCURY,
-                "Venus": const.VENUS,
-                "Mars": const.MARS,
-                "Jupiter": const.JUPITER,
-                "Saturn": const.SATURN,
-                "Uranus": const.URANUS,
-                "Neptune": const.NEPTUNE,
-                "Pluto": const.PLUTO,
-                "Rahu": const.NORTH_NODE,
-                "Ketu": const.SOUTH_NODE,
-                "North Node": const.NORTH_NODE,
-                "South Node": const.SOUTH_NODE
-            }
-
-            try:
-                planet_list = []
-                for p in planets:
-                    if isinstance(p, str):
-                        # First try direct mapping
-                        if p in planet_mapping:
-                            planet_list.append(planet_mapping[p])
-                        else:
-                            # Try case-insensitive match if direct mapping fails
-                            p_lower = p.lower()
-                            if p_lower in planet_mapping:
-                                planet_list.append(planet_mapping[p_lower])
-                            else:
-                                print(f"Warning: Unknown planet '{p}', skipping")
-
-                if not planet_list:
-                    print("No valid planets found, using default planets")
-                    planet_list = None
-                else:
-                    print(f"Mapped planets: {planet_list}")
-            except Exception as e:
-                print(f"Error mapping planets: {str(e)}")
-                planet_list = None
-
-        # Get the astrocartography data
-        try:
-            astro_data = astrocartography.get_astrocartography_data(planet_list)
-            print("Successfully calculated astrocartography data")
-            return astro_data
-        except Exception as e:
-            print(f"Error calculating astrocartography data: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
-            return {"status": "error", "message": f"Error calculating astrocartography data: {str(e)}"}
-
-    except Exception as e:
-        print(f"Unexpected error in get_astrocartography_data: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
-        return {"status": "error", "message": str(e)}
-
-@app.post("/get_yogas")
-async def get_yogas(horo_input: ChartInput, categorize_by_influence: bool = False):
-    """
-    Analyzes a birth chart to identify important Hindu astrological yogas (planetary combinations).
-    Returns a list of yogas present in the chart with descriptions.
-
-    Args:
-        horo_input: Chart input data
-        categorize_by_influence: If True, yogas will be categorized as benefic or malefic
-                               If False (default), yogas will be categorized by traditional types
-    """
-    # First get the KP data which contains all planetary positions we need
-    kp_data = await get_kp_data(horo_input)
-
-    # Get the rasi chart data which uses Lahiri ayanamsa
-    rasi_chart_data = kp_data["rasi_chart"]
-
-    # Create consolidated planet positions directly from rasi chart data
-    # This is more accurate for yoga calculations as it properly reflects
-    # the sidereal zodiac positions
-    planet_positions = {}
-    houses_data = {house["HouseNr"]: house for house in kp_data["cusps"]}
-
-    # Define sign rulerships according to Vedic astrology
-    sign_lords = {
-        "Aries": "Mars",
-        "Taurus": "Venus",
-        "Gemini": "Mercury",
-        "Cancer": "Moon",
-        "Leo": "Sun",
-        "Virgo": "Mercury",
-        "Libra": "Venus",
-        "Scorpio": "Mars",
-        "Sagittarius": "Jupiter",
-        "Capricorn": "Saturn",
-        "Aquarius": "Saturn",
-        "Pisces": "Jupiter"
-    }
-
-    # Process the rasi chart data to create a proper planet_positions dictionary
-    for sign_data in rasi_chart_data:
-        rasi = sign_data["Rasi"]
-        for planet_entry in sign_data["Planets"]:
-            planet_name = planet_entry["Name"]
-
-            # Find which house this planet is in
-            house_nr = None
-            for house_num, house_data in houses_data.items():
-                if house_data["Rasi"] == rasi:
-                    house_nr = house_num
-                    break
-
-            # If house not found, use a fallback method from planets data
-            if house_nr is None:
-                for planet in kp_data["planets"]:
-                    if planet["Object"] == planet_name:
-                        house_nr = planet["HouseNr"]
-                        break
-
-            # Skip if we couldn't determine the house
-            if house_nr is None:
-                continue
-
-            # Gather retrograde information from planets data
-            is_retrograde = False
-            for planet in kp_data["planets"]:
-                if planet["Object"] == planet_name:
-                    is_retrograde = planet["isRetroGrade"]
-                    break
-
-            planet_positions[planet_name] = {
-                "Object": planet_name,
-                "Rasi": rasi,
-                "RasiLord": sign_lords.get(rasi, ""),  # Add the rasi lord for each planet
-                "HouseNr": house_nr,
-                "isRetroGrade": is_retrograde,
-                # Include other necessary data for yoga calculations
-                "SignLonDecDeg": planet_entry.get("SignLonDecDeg", 0),
-                "LonDecDeg": planet_entry.get("LonDecDeg", 0)
-            }
-
-    # Enhance houses_data with proper rasi lord information
-    for house_num, house_data in houses_data.items():
-        rasi = house_data["Rasi"]
-        houses_data[house_num]["RasiLord"] = sign_lords.get(rasi, "")
-
-    # Get all yoga results by traditional categories
-    traditional_yogas = {
-        "raj_yogas": check_raj_yogas(planet_positions, houses_data),
-        "dhana_yogas": check_dhana_yogas(planet_positions, houses_data),
-        "pancha_mahapurusha_yogas": check_pancha_mahapurusha_yogas(planet_positions),
-        "nabhasa_yogas": check_nabhasa_yogas(planet_positions),
-        "other_yogas": check_other_yogas(planet_positions, houses_data),
-        "additional_benefic_yogas": check_additional_benefic_yogas(planet_positions, houses_data),
-        "intellectual_yogas": check_intellectual_yogas(planet_positions, houses_data),
-        "malefic_yogas": check_malefic_yogas(planet_positions, houses_data)
-    }
-
-    # If requested, recategorize yogas by their influence (benefic or malefic)
-    if categorize_by_influence:
-        benefic_yogas = []
-        malefic_yogas = []
-
-        # Categorize traditional yogas by influence
-        benefic_categories = ["raj_yogas", "dhana_yogas", "pancha_mahapurusha_yogas",
-                            "additional_benefic_yogas", "intellectual_yogas", "other_yogas"]
-
-        for category in benefic_categories:
-            for yoga in traditional_yogas[category]:
-                # Skip some yogas from other_yogas that are actually malefic
-                if category == "other_yogas" and yoga["name"] in ["Kemadruma Yoga", "Kala Sarpa Yoga", "Shakata Yoga"]:
-                    malefic_yogas.append(yoga)
-                else:
-                    benefic_yogas.append(yoga)
-
-        # Add malefic yogas
-        malefic_yogas.extend(traditional_yogas["malefic_yogas"])
-
-        # Some Nabhasa yogas can be either benefic or malefic depending on planets involved
-        # For simplicity, we'll add them to benefic category
-        benefic_yogas.extend(traditional_yogas["nabhasa_yogas"])
-
-        # Return yogas categorized by influence
-        return {
-            "benefic_yogas": benefic_yogas,
-            "malefic_yogas": malefic_yogas,
-            "total_yogas": len(benefic_yogas) + len(malefic_yogas)
-        }
-
-    # Return yogas categorized by traditional types
-    return traditional_yogas
 
 
 

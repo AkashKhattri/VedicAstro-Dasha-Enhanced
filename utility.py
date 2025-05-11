@@ -74,3 +74,4 @@ def get_planets_aspecting_houses(planet: str, current_house: int) -> List[int]:
     ]
 
     return aspecting_houses
+
